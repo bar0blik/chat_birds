@@ -90,7 +90,7 @@ impl Npc {
         for (tid, state) in &self.states.0 {
             bmap.0.entry(*tid).or_default().push(BeliefEntry {
                 state: state.clone_box(),
-                certainty: 1.0,
+                certainty: 255,
                 probability: Probability::Always,
                 source: BeliefSource::Myself,
                 temporal: Temporal::Tense(Tense::Present),
@@ -178,7 +178,7 @@ impl Npc {
 
     fn describe_entry(e: &BeliefEntry) -> String {
         let s = &e.state;
-        let cert = e.certainty * 100.0;
+        let cert = (u16::from(e.certainty) * 100) / 255;
         let src = match &e.source {
             BeliefSource::Myself => "self".to_string(),
             BeliefSource::Agent(id) => format!("agent:{}", id.0),
@@ -207,7 +207,7 @@ impl Npc {
         } else {
             "?".to_string()
         };
-        format!("{} [{:.0}% via {}]", val, cert, src)
+        format!("{} [{}% via {}]", val, cert, src)
     }
 
     fn print_status(&self) {
@@ -277,8 +277,8 @@ impl Agent for Npc {
         for (_, bmap) in self.beliefs_mut().0.iter_mut() {
             for (_, entries) in bmap.0.iter_mut() {
                 for e in entries.iter_mut() {
-                    e.certainty = (e.certainty - 0.15).max(0.0);
-                    if e.certainty < 0.4 {
+                    e.certainty = e.certainty.saturating_sub(38);
+                    if e.certainty < 102 {
                         if let BeliefSource::Agent(_) = e.source {
                             e.source = BeliefSource::Inferred;
                             degraded += 1;
@@ -286,7 +286,7 @@ impl Agent for Npc {
                     }
                 }
                 let before = entries.len();
-                entries.retain(|e| e.certainty > 0.0);
+                entries.retain(|e| e.certainty > 0);
                 forgotten += before - entries.len();
             }
         }
@@ -318,7 +318,8 @@ impl Agent for Npc {
         existing: Vec<BeliefEntry>,
         mut incoming: BeliefEntry,
     ) -> Vec<BeliefEntry> {
-        incoming.certainty *= self.get_trust(from);
+        let scaled = (f32::from(incoming.certainty) * self.get_trust(from)).round();
+        incoming.certainty = scaled.clamp(0.0, 255.0) as u8;
         let tid = incoming.state.as_any().type_id();
         let cert = incoming.certainty;
         let mut result: Vec<BeliefEntry> = existing

@@ -123,7 +123,7 @@ pub enum BeliefSource {
 
 pub struct BeliefEntry {
     pub state: Box<dyn State>,
-    pub certainty: f32, // 0.0..=1.0
+    pub certainty: u8, // 0..=255
     pub probability: Probability,
     pub source: BeliefSource,
     pub temporal: Temporal,
@@ -179,7 +179,7 @@ impl BeliefMap {
 //
 // Example:
 //   my beliefs["agent:1"] → BeliefMap → NestedBelief {
-//       store: { "key1" → [BeliefEntry(InBox, certainty=1.0)] }
+//       store: { "key1" → [BeliefEntry(InBox, certainty=255)] }
 //   }
 // Meaning: "I believe agent 1 believes key1 is in a box."
 //
@@ -278,6 +278,12 @@ impl BeliefKey for String {
     }
 }
 
+impl<T: BeliefKey + ?Sized> BeliefKey for &T {
+    fn to_key(&self) -> Cow<'_, str> {
+        (*self).to_key()
+    }
+}
+
 // ── StateRegistry ─────────────────────────────────────────────────────────────
 //
 // Tracks semantic relationships between state types:
@@ -356,21 +362,21 @@ pub trait Agent {
 
     fn on_message(&mut self, msg: Message) -> Vec<Message>;
 
-    /// Apply memory decay. Default: -0.15 certainty per entry, degrade sources,
+    /// Apply memory decay. Default: -38 certainty per entry, degrade sources,
     /// drop zeroes. Override for custom decay strategies.
     fn decay(&mut self) {
         for (_, bmap) in self.beliefs_mut().0.iter_mut() {
             for (_, entries) in bmap.0.iter_mut() {
                 for e in entries.iter_mut() {
-                    e.certainty = (e.certainty - 0.15).max(0.0);
+                    e.certainty = e.certainty.saturating_sub(38);
                     // Source degrades as certainty fades: Agent → Inferred
-                    if e.certainty < 0.4 {
+                    if e.certainty < 102 {
                         if let BeliefSource::Agent(_) = e.source {
                             e.source = BeliefSource::Inferred;
                         }
                     }
                 }
-                entries.retain(|e| e.certainty > 0.0);
+                entries.retain(|e| e.certainty > 0);
             }
         }
     }
