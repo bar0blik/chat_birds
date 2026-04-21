@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
 use chat_birds::*;
-// ── States ────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  THE CROSSROADS INN — example
+// ══════════════════════════════════════════════════════════════════════════════
 
 #[derive(Clone, Debug, PartialEq)]
 enum Mood {
@@ -11,6 +13,7 @@ enum Mood {
     Wary,
     Furious,
 }
+impl_state!(Mood);
 
 #[derive(Clone, Debug)]
 struct Health(pub f32);
@@ -18,11 +21,18 @@ struct Health(pub f32);
 struct Hunger(pub f32);
 #[derive(Clone, Debug)]
 struct Gold(pub u32);
+/// Composite alias: health < 40
+#[derive(Clone, Debug)]
+struct Injured;
+/// Composite alias: hunger > 80
+#[derive(Clone, Debug)]
+struct Starving;
 
-impl_state!(Mood);
 impl_state!(Health);
 impl_state!(Hunger);
 impl_state!(Gold);
+impl_state!(Injured);
+impl_state!(Starving);
 
 impl std::fmt::Display for Mood {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -35,15 +45,11 @@ impl std::fmt::Display for Mood {
     }
 }
 
-// ── Personality ───────────────────────────────────────────────────────────────
-
 enum Personality {
     Innkeeper,
     Bard,
     Mercenary,
 }
-
-// ── Npc ───────────────────────────────────────────────────────────────────────
 
 struct Npc {
     id: AgentId,
@@ -71,11 +77,13 @@ impl Npc {
         }
     }
 
-    fn set_trust(&mut self, other: AgentId, trust: f32) {
-        self.trust.insert(other, trust.clamp(0.0, 1.0));
+    fn set_trust(&mut self, other: AgentId, t: f32) {
+        self.trust.insert(other, t.clamp(0.0, 1.0));
+    }
+    fn get_trust(&self, other: AgentId) -> f32 {
+        self.trust.get(&other).copied().unwrap_or(0.5)
     }
 
-    /// Packs own StateMap into a BeliefStore to send as a message payload.
     fn pack_own_states(&self) -> BeliefStore {
         let mut store = BeliefStore::new();
         let bmap = store.get_or_insert(&self.name.as_str());
@@ -91,20 +99,115 @@ impl Npc {
         store
     }
 
-    fn describe_entry(entry: &BeliefEntry) -> String {
-        let s = &entry.state;
-        let cert = entry.certainty * 100.0;
-        if let Some(h) = s.as_any().downcast_ref::<Health>() {
-            format!("health={:.0} ({:.0}%)", h.0, cert)
+    fn generate_utterance(&self, target: &str) -> String {
+        let mood = self.states.get::<Mood>().cloned().unwrap_or(Mood::Neutral);
+        let hunger = self.states.get::<Hunger>().map(|h| h.0).unwrap_or(0.0);
+        let health = self.states.get::<Health>().map(|h| h.0).unwrap_or(100.0);
+        let gold = self.states.get::<Gold>().map(|g| g.0).unwrap_or(0);
+        match self.personality {
+            Personality::Innkeeper => match (&mood, hunger > 70.0, health < 40.0, gold < 5) {
+                (_, true, _, _) => format!(
+                    "{}: \"Excuse me, {}, but I haven't eaten since dawn.\"",
+                    self.name, target
+                ),
+                (_, _, true, _) => format!(
+                    "{}: \"Not at my best today, {}. What do you need?\"",
+                    self.name, target
+                ),
+                (_, _, _, true) => format!(
+                    "{}: \"Slow night, {}. Barely keeping the fires going.\"",
+                    self.name, target
+                ),
+                (Mood::Joyful, ..) => format!(
+                    "{}: \"Welcome, {}! First round is on me!\"",
+                    self.name, target
+                ),
+                (Mood::Wary, ..) => format!(
+                    "{}: \"I'll be watching you, {}. Don't make me regret this.\"",
+                    self.name, target
+                ),
+                (Mood::Furious, ..) => format!(
+                    "{}: \"You've got some nerve showing up here, {}.\"",
+                    self.name, target
+                ),
+                _ => format!("{}: \"What'll it be, {}?\"", self.name, target),
+            },
+            Personality::Bard => match (&mood, hunger > 70.0) {
+                (_, true) => format!(
+                    "{}: \"Even muses must eat, {}. A ballad after supper?\"",
+                    self.name, target
+                ),
+                (Mood::Joyful, _) => format!(
+                    "{}: \"{}! You arrive like a chorus after a long verse!\"",
+                    self.name, target
+                ),
+                (Mood::Furious, _) => format!(
+                    "{}: \"Not now, {}. Someone stole my best ballad.\"",
+                    self.name, target
+                ),
+                (Mood::Wary, _) => format!(
+                    "{}: \"I've heard stories about you, {}. Interesting ones.\"",
+                    self.name, target
+                ),
+                _ => format!(
+                    "{}: \"Lovely to see you, {}. Sit, and I'll play something fitting.\"",
+                    self.name, target
+                ),
+            },
+            Personality::Mercenary => match (&mood, health < 40.0, hunger > 70.0) {
+                (_, true, _) => format!(
+                    "{}: \"Took hits today, {}. Still standing.\"",
+                    self.name, target
+                ),
+                (_, _, true) => format!("{}: \"Hungry. Talk later, {}.\"", self.name, target),
+                (Mood::Joyful, ..) => format!(
+                    "{}: \"Good contract today. Buy you a drink, {}?\"",
+                    self.name, target
+                ),
+                (Mood::Furious, ..) => format!(
+                    "{}: *cracks knuckles* \"You want trouble, {}?\"",
+                    self.name, target
+                ),
+                (Mood::Wary, ..) => {
+                    format!("{}: \"Something's off about you, {}.\"", self.name, target)
+                }
+                _ => format!("{}: \"Speak, {}.\"", self.name, target),
+            },
+        }
+    }
+
+    fn describe_entry(e: &BeliefEntry) -> String {
+        let s = &e.state;
+        let cert = e.certainty * 100.0;
+        let src = match &e.source {
+            BeliefSource::Myself => "self".to_string(),
+            BeliefSource::Agent(id) => format!("agent:{}", id.0),
+            BeliefSource::Inferred => "inferred".to_string(),
+        };
+        let val = if let Some(h) = s.as_any().downcast_ref::<Health>() {
+            format!("health={:.0}", h.0)
         } else if let Some(h) = s.as_any().downcast_ref::<Hunger>() {
-            format!("hunger={:.0} ({:.0}%)", h.0, cert)
+            format!("hunger={:.0}", h.0)
         } else if let Some(m) = s.as_any().downcast_ref::<Mood>() {
-            format!("mood={} ({:.0}%)", m, cert)
+            format!("mood={}", m)
         } else if let Some(g) = s.as_any().downcast_ref::<Gold>() {
-            format!("gold={} ({:.0}%)", g.0, cert)
+            format!("gold={}", g.0)
+        } else if s.as_any().downcast_ref::<Injured>().is_some() {
+            "injured".to_string()
+        } else if s.as_any().downcast_ref::<Starving>().is_some() {
+            "starving".to_string()
+        } else if let Some(nb) = s.as_any().downcast_ref::<NestedBelief>() {
+            let n: usize = nb
+                .store
+                .0
+                .values()
+                .map(|bm| bm.0.values().map(|v| v.len()).sum::<usize>())
+                .sum();
+            format!("nested_beliefs({} entries)", n)
         } else {
             "?".to_string()
-        }
+        };
+        format!("{} [{:.0}% via {}]", val, cert, src)
     }
 
     fn print_status(&self) {
@@ -112,133 +215,32 @@ impl Npc {
         let hunger = self.states.get::<Hunger>().map(|h| h.0).unwrap_or(0.0);
         let mood = self.states.get::<Mood>().cloned().unwrap_or(Mood::Neutral);
         let gold = self.states.get::<Gold>().map(|g| g.0).unwrap_or(0);
-
-        println!("┌─ {}", self.name);
+        println!("┌─ {} (id:{})", self.name, self.id.0);
         println!(
-            "│  Health {:>5.0}  Hunger {:>5.0}  Mood {:>8}  Gold {:>4}",
+            "│  HP {:>5.0}  Hunger {:>5.0}  Mood {:>8}  Gold {:>4}",
             health, hunger, mood, gold
         );
-
         if !self.trust.is_empty() {
             let ts: Vec<String> = self
                 .trust
                 .iter()
                 .map(|(id, t)| format!("agent{}={:.0}%", id.0, t * 100.0))
                 .collect();
-            println!("│  Trust: {}", ts.join(", "));
+            println!("│  Trust  : {}", ts.join(", "));
         }
-
         if self.beliefs.0.is_empty() {
             println!("│  Beliefs: (none)");
         } else {
             println!("│  Beliefs:");
             for (key, bmap) in &self.beliefs.0 {
-                let parts: Vec<String> = bmap
-                    .0
-                    .values()
-                    .filter_map(|entries| {
-                        entries
-                            .iter()
-                            .max_by(|a, b| a.certainty.partial_cmp(&b.certainty).unwrap())
-                    })
-                    .map(Self::describe_entry)
-                    .collect();
-                if !parts.is_empty() {
-                    println!("│    '{}': {}", key, parts.join(", "));
-                }
-            }
-        }
-        println!("└──────────────────────────────────────────────");
-    }
-
-    fn generate_utterance_to(&self, target: &str) -> String {
-        let mood = self.states.get::<Mood>().cloned().unwrap_or(Mood::Neutral);
-        let hunger = self.states.get::<Hunger>().map(|h| h.0).unwrap_or(0.0);
-        let health = self.states.get::<Health>().map(|h| h.0).unwrap_or(100.0);
-
-        match self.personality {
-            Personality::Innkeeper => {
-                if hunger > 70.0 {
-                    format!(
-                        "{}: \"Pardon me, {}, but I haven't eaten since dawn. Business after?\"",
-                        self.name, target
-                    )
-                } else if health < 40.0 {
-                    format!(
-                        "{}: \"Not at my best today, {}. What do you need?\"",
-                        self.name, target
-                    )
-                } else {
-                    match mood {
-                        Mood::Joyful => format!(
-                            "{}: \"Welcome, {}! First round's on me tonight!\"",
-                            self.name, target
-                        ),
-                        Mood::Wary => format!(
-                            "{}: \"I'll be watching you, {}. Don't make me regret it.\"",
-                            self.name, target
-                        ),
-                        Mood::Furious => format!(
-                            "{}: \"You've got some nerve showing up here, {}.\"",
-                            self.name, target
-                        ),
-                        Mood::Neutral => format!("{}: \"What'll it be, {}?\"", self.name, target),
-                    }
-                }
-            }
-            Personality::Bard => {
-                if hunger > 70.0 {
-                    format!(
-                        "{}: \"Even muses must eat, dear {}. A ballad after supper?\"",
-                        self.name, target
-                    )
-                } else {
-                    match mood {
-                        Mood::Joyful => format!(
-                            "{}: \"{}! You arrive like a chorus after a long verse!\"",
-                            self.name, target
-                        ),
-                        Mood::Furious => format!(
-                            "{}: \"Not now, {}. Someone's stolen my best ballad and I intend to find them.\"",
-                            self.name, target
-                        ),
-                        Mood::Wary => format!(
-                            "{}: \"I've heard stories about you, {}. Interesting ones.\"",
-                            self.name, target
-                        ),
-                        Mood::Neutral => format!(
-                            "{}: \"Lovely to see you, {}. Sit, and I'll play something fitting.\"",
-                            self.name, target
-                        ),
-                    }
-                }
-            }
-            Personality::Mercenary => {
-                if health < 40.0 {
-                    format!(
-                        "{}: \"Took some hits, {}. Still standing.\"",
-                        self.name, target
-                    )
-                } else if hunger > 70.0 {
-                    format!("{}: \"Hungry. Talk later, {}.\"", self.name, target)
-                } else {
-                    match mood {
-                        Mood::Joyful => format!(
-                            "{}: \"Good contract today. Buy you a drink, {}?\"",
-                            self.name, target
-                        ),
-                        Mood::Furious => format!(
-                            "{}: *cracks knuckles* \"You want trouble, {}?\"",
-                            self.name, target
-                        ),
-                        Mood::Wary => {
-                            format!("{}: \"Something's off about you, {}.\"", self.name, target)
-                        }
-                        Mood::Neutral => format!("{}: \"Speak, {}.\"", self.name, target),
+                for (_, entries) in &bmap.0 {
+                    for e in entries {
+                        println!("│    '{}': {}", key, Self::describe_entry(e));
                     }
                 }
             }
         }
+        println!("└──────────────────────────────────────────────────────────");
     }
 }
 
@@ -271,10 +273,17 @@ impl Agent for Npc {
 
     fn decay(&mut self) {
         let mut forgotten = 0usize;
-        for (_, bmap) in self.beliefs.0.iter_mut() {
+        let mut degraded = 0usize;
+        for (_, bmap) in self.beliefs_mut().0.iter_mut() {
             for (_, entries) in bmap.0.iter_mut() {
                 for e in entries.iter_mut() {
                     e.certainty = (e.certainty - 0.15).max(0.0);
+                    if e.certainty < 0.4 {
+                        if let BeliefSource::Agent(_) = e.source {
+                            e.source = BeliefSource::Inferred;
+                            degraded += 1;
+                        }
+                    }
                 }
                 let before = entries.len();
                 entries.retain(|e| e.certainty > 0.0);
@@ -282,8 +291,23 @@ impl Agent for Npc {
             }
         }
         println!(
-            "  [{}] memory fades. {} belief(s) forgotten.",
-            self.name, forgotten
+            "  [{}] memory fades. {} forgotten, {} sources degraded to 'inferred'.",
+            self.name, forgotten, degraded
+        );
+    }
+
+    fn observe_outcome(&mut self, agent: AgentId, confirmed: bool) {
+        let t = self.trust.entry(agent).or_insert(0.5);
+        if confirmed {
+            *t = (*t + 0.05).min(1.0);
+        } else {
+            *t = (*t - 0.10).max(0.0);
+        }
+        println!(
+            "  [{}] trust in agent {} → {:.0}%.",
+            self.name,
+            agent.0,
+            *t * 100.0
         );
     }
 
@@ -294,33 +318,39 @@ impl Agent for Npc {
         existing: Vec<BeliefEntry>,
         mut incoming: BeliefEntry,
     ) -> Vec<BeliefEntry> {
-        let trust = self.trust.get(&from).copied().unwrap_or(0.5);
-        incoming.certainty *= trust;
-
-        // Replace any same-type entry; keep incoming regardless of certainty
-        // (agent always records what it heard, scaled by trust).
-        let incoming_tid = incoming.state.as_any().type_id();
+        incoming.certainty *= self.get_trust(from);
+        let tid = incoming.state.as_any().type_id();
+        let cert = incoming.certainty;
         let mut result: Vec<BeliefEntry> = existing
             .into_iter()
-            .filter(|e| e.state.as_any().type_id() != incoming_tid)
+            .filter(|e| !(e.state.as_any().type_id() == tid && cert >= e.certainty))
             .collect();
         result.push(incoming);
         result
     }
 }
 
-// ── Inn ───────────────────────────────────────────────────────────────────────
-
 struct Inn {
     agents: HashMap<AgentId, Npc>,
     names: HashMap<String, AgentId>,
+    registry: StateRegistry,
 }
 
 impl Inn {
     fn new() -> Self {
+        let mut r = StateRegistry::new();
+        r.register::<Health>("health");
+        r.register::<Hunger>("hunger");
+        r.register::<Mood>("mood");
+        r.register::<Gold>("gold");
+        r.register::<Injured>("injured (alias: low health)");
+        r.register::<Starving>("starving (alias: high hunger)");
+        r.alias::<Injured, Health>();
+        r.alias::<Starving, Hunger>();
         Inn {
             agents: HashMap::new(),
             names: HashMap::new(),
+            registry: r,
         }
     }
 
@@ -333,52 +363,41 @@ impl Inn {
         self.names.get(&name.to_lowercase()).copied()
     }
 
-    fn interact(&mut self, from_name: &str, to_name: &str, with_speech: bool) {
-        let from_id = match self.resolve(from_name) {
-            Some(id) => id,
-            None => {
-                println!("Unknown agent: '{}'", from_name);
-                return;
-            }
+    fn interact(&mut self, from_name: &str, to_name: &str, speak: bool) {
+        let (Some(fid), Some(tid)) = (self.resolve(from_name), self.resolve(to_name)) else {
+            println!("Unknown agent in pair: '{}' / '{}'", from_name, to_name);
+            return;
         };
-        let to_id = match self.resolve(to_name) {
-            Some(id) => id,
-            None => {
-                println!("Unknown agent: '{}'", to_name);
-                return;
-            }
-        };
-        if from_id == to_id {
+        if fid == tid {
             println!("An agent cannot message itself.");
             return;
         }
 
         let (utterance, payload) = {
-            let sender = &self.agents[&from_id];
-            let u = if with_speech {
-                Some(sender.generate_utterance_to(to_name))
-            } else {
-                None
-            };
-            (u, sender.pack_own_states())
+            let s = &self.agents[&fid];
+            (
+                if speak {
+                    Some(s.generate_utterance(to_name))
+                } else {
+                    None
+                },
+                s.pack_own_states(),
+            )
         };
 
         if let Some(ref u) = utterance {
             println!("{}", u);
         }
-
         let msg = Message {
-            from: from_id,
-            to: to_id,
+            from: fid,
+            to: tid,
             payload,
             utterance,
             ttl: 8,
         };
-        self.agents.get_mut(&to_id).unwrap().on_message(msg);
+        self.agents.get_mut(&tid).unwrap().on_message(msg);
     }
 }
-
-// ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
     let mut inn = Inn::new();
@@ -387,13 +406,10 @@ fn main() {
     let mut lyra = Npc::new(1, "Lyra", Personality::Bard);
     let mut gruff = Npc::new(2, "Gruff", Personality::Mercenary);
 
-    // Bramble trusts Lyra, is wary of Gruff
-    bramble.set_trust(AgentId(1), 0.75);
+    bramble.set_trust(AgentId(1), 0.80);
     bramble.set_trust(AgentId(2), 0.25);
-    // Lyra trusts everyone
-    lyra.set_trust(AgentId(0), 0.80);
+    lyra.set_trust(AgentId(0), 0.75);
     lyra.set_trust(AgentId(2), 0.60);
-    // Gruff is suspicious of Bramble but oddly trusts the bard
     gruff.set_trust(AgentId(0), 0.35);
     gruff.set_trust(AgentId(1), 0.90);
 
@@ -401,101 +417,99 @@ fn main() {
     inn.add(lyra);
     inn.add(gruff);
 
-    println!("╔══════════════════════════════════════════════╗");
-    println!("║           THE CROSSROADS INN                ║");
-    println!("╠══════════════════════════════════════════════╣");
-    println!("║  bramble (id:0) — innkeeper                 ║");
-    println!("║  lyra    (id:1) — bard                      ║");
-    println!("║  gruff   (id:2) — mercenary                 ║");
-    println!("╚══════════════════════════════════════════════╝");
+    println!("╔════════════════════════════════════════════════════╗");
+    println!("║            THE CROSSROADS INN                     ║");
+    println!("╠════════════════════════════════════════════════════╣");
+    println!("║  bramble (id:0) — innkeeper                       ║");
+    println!("║  lyra    (id:1) — bard                            ║");
+    println!("║  gruff   (id:2) — mercenary                       ║");
+    println!("╚════════════════════════════════════════════════════╝");
     println!("Type 'help' for commands.\n");
 
     let stdin = io::stdin();
     loop {
         print!("> ");
         io::stdout().flush().unwrap();
-
         let mut line = String::new();
-        if stdin.lock().read_line(&mut line).is_err() || line.trim().is_empty() {
-            if line.is_empty() {
-                break;
-            } // EOF
+        if stdin.lock().read_line(&mut line).is_err() || line.is_empty() {
+            break;
+        }
+        if line.trim().is_empty() {
             continue;
         }
 
-        let parts: Vec<&str> = line.trim().splitn(4, ' ').collect();
+        let parts: Vec<&str> = line.trim().splitn(5, ' ').collect();
         match parts.as_slice() {
             ["help"] | ["h"] => {
-                println!("  status <name>                    — show states + beliefs");
-                println!("  set    <name> health <0-100>     — set health");
-                println!("  set    <name> hunger <0-100>     — set hunger");
-                println!("  set    <name> gold   <n>         — set gold");
-                println!("  set    <name> mood   joyful|neutral|wary|furious");
-                println!("  tell   <from> <to>               — share states silently");
-                println!("  speak  <from> <to>               — speak + share states");
-                println!("  trust  <who> <toward> <0.0-1.0>  — set trust level");
-                println!("  decay  <name>                    — fade memories (-15% certainty)");
+                println!("  status <n>                          — states + beliefs");
+                println!("  set <n> health|hunger <0-100>       — set numeric state");
+                println!("  set <n> gold <n>                    — set gold");
+                println!("  set <n> mood joyful|neutral|wary|furious");
+                println!("  tell  <from> <to>                   — share states silently");
+                println!("  speak <from> <to>                   — speak + share states");
+                println!("  trust <who> <toward> <0.0-1.0>      — set trust level");
+                println!("  outcome <who> <toward> true|false   — claim confirmed/refuted");
+                println!("  decay <n>                           — fade memories");
                 println!("  quit");
             }
-
             ["quit"] | ["q"] | ["exit"] => break,
 
-            ["status", name] => match inn.resolve(name) {
+            ["status", n] => match inn.resolve(n) {
                 Some(id) => inn.agents[&id].print_status(),
-                None => println!("Unknown: '{}'", name),
+                None => println!("Unknown: '{}'", n),
             },
 
-            ["set", name, "health", val] => match (inn.resolve(name), val.parse::<f32>()) {
+            ["set", n, "health", v] => match (inn.resolve(n), v.parse::<f32>()) {
                 (Some(id), Ok(v)) => {
-                    inn.agents
-                        .get_mut(&id)
-                        .unwrap()
-                        .states
-                        .insert(Health(v.clamp(0.0, 100.0)));
+                    let v = v.clamp(0.0, 100.0);
+                    inn.agents.get_mut(&id).unwrap().states.insert(Health(v));
+                    if v < 40.0 {
+                        println!("  [{}] is now injured.", n);
+                    }
                     println!("Done.");
                 }
-                _ => println!("Usage: set <name> health <0-100>"),
+                _ => println!("Usage: set <n> health <0-100>"),
             },
-            ["set", name, "hunger", val] => match (inn.resolve(name), val.parse::<f32>()) {
+            ["set", n, "hunger", v] => match (inn.resolve(n), v.parse::<f32>()) {
                 (Some(id), Ok(v)) => {
-                    inn.agents
-                        .get_mut(&id)
-                        .unwrap()
-                        .states
-                        .insert(Hunger(v.clamp(0.0, 100.0)));
+                    let v = v.clamp(0.0, 100.0);
+                    inn.agents.get_mut(&id).unwrap().states.insert(Hunger(v));
+                    if v > 80.0 {
+                        println!("  [{}] is now starving.", n);
+                    }
                     println!("Done.");
                 }
-                _ => println!("Usage: set <name> hunger <0-100>"),
+                _ => println!("Usage: set <n> hunger <0-100>"),
             },
-            ["set", name, "gold", val] => match (inn.resolve(name), val.parse::<u32>()) {
+            ["set", n, "gold", v] => match (inn.resolve(n), v.parse::<u32>()) {
                 (Some(id), Ok(v)) => {
                     inn.agents.get_mut(&id).unwrap().states.insert(Gold(v));
                     println!("Done.");
                 }
-                _ => println!("Usage: set <name> gold <n>"),
+                _ => println!("Usage: set <n> gold <n>"),
             },
-            ["set", name, "mood", val] => {
-                let mood = match *val {
+            ["set", n, "mood", v] => {
+                let mood = match *v {
                     "joyful" => Some(Mood::Joyful),
                     "neutral" => Some(Mood::Neutral),
                     "wary" => Some(Mood::Wary),
                     "furious" => Some(Mood::Furious),
                     _ => None,
                 };
-                match (inn.resolve(name), mood) {
+                match (inn.resolve(n), mood) {
                     (Some(id), Some(m)) => {
                         inn.agents.get_mut(&id).unwrap().states.insert(m);
                         println!("Done.");
                     }
-                    _ => println!("Usage: set <name> mood joyful|neutral|wary|furious"),
+                    _ => println!("Usage: set <n> mood joyful|neutral|wary|furious"),
                 }
             }
 
-            ["tell", from, to] => inn.interact(from, to, false),
-            ["speak", from, to] => inn.interact(from, to, true),
+            ["tell", f, t] => inn.interact(f, t, false),
+            ["speak", f, t] => inn.interact(f, t, true),
 
-            ["trust", who, toward, val] => {
-                match (inn.resolve(who), inn.resolve(toward), val.parse::<f32>()) {
+            ["trust", who, toward, v] => {
+                match (inn.resolve(who), inn.resolve(toward), v.parse::<f32>()) {
                     (Some(wid), Some(tid), Ok(v)) => {
                         inn.agents.get_mut(&wid).unwrap().set_trust(tid, v);
                         println!(
@@ -509,9 +523,21 @@ fn main() {
                 }
             }
 
-            ["decay", name] => match inn.resolve(name) {
+            ["outcome", who, toward, result] => {
+                let confirmed = matches!(*result, "true" | "yes");
+                match (inn.resolve(who), inn.resolve(toward)) {
+                    (Some(wid), Some(tid)) => inn
+                        .agents
+                        .get_mut(&wid)
+                        .unwrap()
+                        .observe_outcome(tid, confirmed),
+                    _ => println!("Usage: outcome <who> <toward> true|false"),
+                }
+            }
+
+            ["decay", n] => match inn.resolve(n) {
                 Some(id) => inn.agents.get_mut(&id).unwrap().decay(),
-                None => println!("Unknown: '{}'", name),
+                None => println!("Unknown: '{}'", n),
             },
 
             _ => println!("Unknown command. Type 'help'."),

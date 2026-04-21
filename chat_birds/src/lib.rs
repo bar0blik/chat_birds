@@ -1,42 +1,12 @@
+#![allow(dead_code)]
+
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
-// ── Macros ────────────────────────────────────────────────────────────────────
-
-/// Implements the `State` trait for a type that derives `Clone`.
-///
-/// Eliminates boilerplate for the four required methods: `as_any`, `as_any_mut`,
-/// `into_any`, and `clone_box`.
-///
-/// # Example
-/// ```ignore
-/// #[derive(Clone)]
-/// struct Emotion(String);
-///
-/// impl_state!(Emotion);
-/// ```
-#[macro_export]
-macro_rules! impl_state {
-    ($ty:ty) => {
-        impl $crate::State for $ty {
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-                self
-            }
-            fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
-                self
-            }
-            fn clone_box(&self) -> Box<dyn $crate::State> {
-                Box::new(self.clone())
-            }
-        }
-    };
-}
-
-// ── AgentId ──────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  CHAT_BIRDS CORE
+// ══════════════════════════════════════════════════════════════════════════════
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct AgentId(pub u32);
@@ -50,7 +20,27 @@ pub trait State: Any + Send + Sync {
     fn clone_box(&self) -> Box<dyn State>;
 }
 
-// ── StateMap (own states — always certain, source = self) ─────────────────────
+#[macro_export]
+macro_rules! impl_state {
+    ($t:ty) => {
+        impl State for $t {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+            fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+                self
+            }
+            fn clone_box(&self) -> Box<dyn State> {
+                Box::new(self.clone())
+            }
+        }
+    };
+}
+
+// ── StateMap (own, always-certain states) ─────────────────────────────────────
 
 pub struct StateMap(pub HashMap<TypeId, Box<dyn State>>);
 
@@ -88,22 +78,28 @@ impl StateMap {
 }
 
 // ── Probability ───────────────────────────────────────────────────────────────
+//
+// Condition(key): holds if the belief at `key` is present and certain enough.
+// Resolved externally by the user at query time.
 
+#[derive(Clone, Debug)]
 pub enum Probability {
-    Level(u8),                 // 0 = impossible, 255 = certain
-    Condition(Box<dyn State>), // true if state holds
+    Level(u8),         // 0 = impossible, 255 = certain
+    Condition(String), // belief-store subject key that must hold
     Always,
     Never,
 }
 
 // ── Temporal ──────────────────────────────────────────────────────────────────
 
+#[derive(Clone, Debug)]
 pub enum Tense {
     Past,
     Present,
     Future,
 }
 
+#[derive(Clone, Debug)]
 pub enum Temporal {
     Clock { hour: u8, minute: u8 },
     Tense(Tense),
@@ -112,7 +108,11 @@ pub enum Temporal {
 }
 
 // ── BeliefSource ──────────────────────────────────────────────────────────────
+//
+// Degrades during decay: Agent(id) → Inferred → entry dropped.
+// Entries from Myself are never overridden by external merge_payload.
 
+#[derive(Clone, Debug)]
 pub enum BeliefSource {
     Myself,
     Agent(AgentId),
@@ -129,7 +129,19 @@ pub struct BeliefEntry {
     pub temporal: Temporal,
 }
 
-// ── BeliefMap (beliefs about one subject) ─────────────────────────────────────
+impl BeliefEntry {
+    pub fn clone_entry(&self) -> BeliefEntry {
+        BeliefEntry {
+            state: self.state.clone_box(),
+            certainty: self.certainty,
+            probability: self.probability.clone(),
+            source: self.source.clone(),
+            temporal: self.temporal.clone(),
+        }
+    }
+}
+
+// ── BeliefMap (all entries for one subject) ───────────────────────────────────
 
 pub struct BeliefMap(pub HashMap<TypeId, Vec<BeliefEntry>>);
 
@@ -142,7 +154,6 @@ impl BeliefMap {
         self.0.entry(TypeId::of::<S>()).or_default().push(entry);
     }
 
-    /// Returns highest-certainty entry for type S.
     pub fn get<S: State + 'static>(&self) -> Option<&BeliefEntry> {
         self.0.get(&TypeId::of::<S>()).and_then(|v| {
             v.iter()
@@ -150,52 +161,60 @@ impl BeliefMap {
         })
     }
 
-    /// All interpretations for type S.
     pub fn get_all<S: State + 'static>(&self) -> &[BeliefEntry] {
         self.0
             .get(&TypeId::of::<S>())
-            .map(|v| v.as_slice())
+            .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
-    /// Replaces all entries for type S — used by resolve_belief output.
     pub fn set<S: State + 'static>(&mut self, entries: Vec<BeliefEntry>) {
         self.0.insert(TypeId::of::<S>(), entries);
     }
 }
 
-// ── BeliefKey ─────────────────────────────────────────────────────────────────
+// ── NestedBelief ──────────────────────────────────────────────────────────────
+//
+// Enables theory of mind: store "what I believe agent X believes" as a State.
+//
+// Example:
+//   my beliefs["agent:1"] → BeliefMap → NestedBelief {
+//       store: { "key1" → [BeliefEntry(InBox, certainty=1.0)] }
+//   }
+// Meaning: "I believe agent 1 believes key1 is in a box."
+//
+// Nesting is unbounded in structure but agents naturally shallow this by
+// treating deeply nested beliefs with very low certainty.
 
-pub trait BeliefKey {
-    fn to_key(&self) -> Cow<'_, str>;
+#[derive(Clone)]
+pub struct NestedBelief {
+    pub store: BeliefStore,
 }
 
-impl BeliefKey for AgentId {
-    fn to_key(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("agent:{}", self.0))
+impl NestedBelief {
+    pub fn new() -> Self {
+        NestedBelief {
+            store: BeliefStore::new(),
+        }
     }
 }
 
-impl BeliefKey for str {
-    fn to_key(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self)
+impl State for NestedBelief {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn State> {
+        Box::new(self.clone())
     }
 }
 
-impl BeliefKey for String {
-    fn to_key(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self.as_str())
-    }
-}
-
-/// Blanket impl to allow references to BeliefKey types.
-impl<T: BeliefKey + ?Sized> BeliefKey for &T {
-    fn to_key(&self) -> Cow<'_, str> {
-        (*self).to_key()
-    }
-}
-
-// ── BeliefStore (beliefs about all subjects) ──────────────────────────────────
+// ── BeliefStore ───────────────────────────────────────────────────────────────
 
 pub struct BeliefStore(pub HashMap<String, BeliefMap>);
 
@@ -219,12 +238,99 @@ impl BeliefStore {
     }
 }
 
+impl Clone for BeliefStore {
+    fn clone(&self) -> Self {
+        let mut map = HashMap::new();
+        for (key, bmap) in &self.0 {
+            let mut new_bmap = BeliefMap::new();
+            for (tid, entries) in &bmap.0 {
+                new_bmap
+                    .0
+                    .insert(*tid, entries.iter().map(|e| e.clone_entry()).collect());
+            }
+            map.insert(key.clone(), new_bmap);
+        }
+        BeliefStore(map)
+    }
+}
+
+// ── BeliefKey ─────────────────────────────────────────────────────────────────
+
+pub trait BeliefKey {
+    fn to_key(&self) -> Cow<'_, str>;
+}
+
+impl BeliefKey for AgentId {
+    fn to_key(&self) -> Cow<'_, str> {
+        Cow::Owned(format!("agent:{}", self.0))
+    }
+}
+
+impl<'a> BeliefKey for &'a str {
+    fn to_key(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl BeliefKey for String {
+    fn to_key(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.as_str())
+    }
+}
+
+// ── StateRegistry ─────────────────────────────────────────────────────────────
+//
+// Tracks semantic relationships between state types:
+//   alias:     TypeId A → TypeId B  ("hungry" is another word for "needs_food")
+//   composite: TypeId A → [TypeId]  ("starving" = high hunger AND low health)
+//
+// Used during belief merging to detect overlap and during display.
+// Does not enforce merging automatically — the Agent decides.
+
+pub struct StateRegistry {
+    aliases: HashMap<TypeId, TypeId>,
+    composites: HashMap<TypeId, Vec<TypeId>>,
+    labels: HashMap<TypeId, &'static str>,
+}
+
+impl StateRegistry {
+    pub fn new() -> Self {
+        StateRegistry {
+            aliases: HashMap::new(),
+            composites: HashMap::new(),
+            labels: HashMap::new(),
+        }
+    }
+
+    pub fn register<S: State + 'static>(&mut self, label: &'static str) {
+        self.labels.insert(TypeId::of::<S>(), label);
+    }
+
+    /// Declare A is an alias for B. During resolution, an A entry may be
+    /// semantically merged with a B entry.
+    pub fn alias<A: State + 'static, B: State + 'static>(&mut self) {
+        self.aliases.insert(TypeId::of::<A>(), TypeId::of::<B>());
+    }
+
+    pub fn composite<A: State + 'static>(&mut self, components: Vec<TypeId>) {
+        self.composites.insert(TypeId::of::<A>(), components);
+    }
+
+    pub fn canonical(&self, tid: TypeId) -> TypeId {
+        *self.aliases.get(&tid).unwrap_or(&tid)
+    }
+
+    pub fn label(&self, tid: TypeId) -> Option<&'static str> {
+        self.labels.get(&tid).copied()
+    }
+}
+
 // ── Message ───────────────────────────────────────────────────────────────────
 
 pub struct Message {
     pub from: AgentId,
     pub to: AgentId,
-    pub payload: BeliefStore, // slice of sender's beliefs
+    pub payload: BeliefStore,
     pub utterance: Option<String>,
     pub ttl: u8,
 }
@@ -243,22 +349,38 @@ pub trait FromUtterance: Sized {
 
 pub trait Agent {
     fn id(&self) -> AgentId;
-
-    /// Own states — fully certain, not overridable by external messages.
     fn states(&self) -> &StateMap;
     fn states_mut(&mut self) -> &mut StateMap;
-
-    /// Beliefs about other agents and world entities.
     fn beliefs(&self) -> &BeliefStore;
     fn beliefs_mut(&mut self) -> &mut BeliefStore;
 
     fn on_message(&mut self, msg: Message) -> Vec<Message>;
 
-    /// User-triggered: implement own decay logic (certainty drop, source loss, etc.)
-    fn decay(&mut self);
+    /// Apply memory decay. Default: -0.15 certainty per entry, degrade sources,
+    /// drop zeroes. Override for custom decay strategies.
+    fn decay(&mut self) {
+        for (_, bmap) in self.beliefs_mut().0.iter_mut() {
+            for (_, entries) in bmap.0.iter_mut() {
+                for e in entries.iter_mut() {
+                    e.certainty = (e.certainty - 0.15).max(0.0);
+                    // Source degrades as certainty fades: Agent → Inferred
+                    if e.certainty < 0.4 {
+                        if let BeliefSource::Agent(_) = e.source {
+                            e.source = BeliefSource::Inferred;
+                        }
+                    }
+                }
+                entries.retain(|e| e.certainty > 0.0);
+            }
+        }
+    }
 
-    /// Conflict resolution. Receives existing entries (moved) + incoming entry.
-    /// Default: append → keeps all interpretations. Override for trust-weighted merging.
+    /// Report whether a claim from `agent` turned out to be correct.
+    /// Default: no-op. Override to update trust scores.
+    fn observe_outcome(&mut self, _agent: AgentId, _confirmed: bool) {}
+
+    /// Conflict resolution. Default: append incoming, drop lower-certainty
+    /// same-type entries. Override for trust-weighted merging.
     fn resolve_belief(
         &self,
         key: &str,
@@ -266,15 +388,22 @@ pub trait Agent {
         existing: Vec<BeliefEntry>,
         incoming: BeliefEntry,
     ) -> Vec<BeliefEntry> {
-        let mut entries = existing;
-        entries.push(incoming);
-        entries
+        let _ = (key, from);
+        let incoming_tid = incoming.state.as_any().type_id();
+        let incoming_cert = incoming.certainty;
+        let mut result: Vec<BeliefEntry> = existing
+            .into_iter()
+            .filter(|e| {
+                !(e.state.as_any().type_id() == incoming_tid && incoming_cert >= e.certainty)
+            })
+            .collect();
+        result.push(incoming);
+        result
     }
 
-    /// Merges a payload BeliefStore into self.beliefs, calling resolve_belief
-    /// per entry so trust-weighted conflict resolution is applied automatically.
+    /// Merge a BeliefStore payload into self.beliefs, calling resolve_belief
+    /// for each entry. Entries originally from Myself are never overwritten.
     fn merge_payload(&mut self, from: AgentId, mut payload: BeliefStore) {
-        // Collect work upfront to avoid holding borrows during resolution.
         let work: Vec<(String, TypeId, Vec<BeliefEntry>)> = payload
             .0
             .iter_mut()
@@ -288,16 +417,27 @@ pub trait Agent {
 
         for (key, tid, incoming_entries) in work {
             for ientry in incoming_entries {
-                // Scoped mut borrow — released before resolve_belief's shared borrow.
-                let existing = {
-                    self.beliefs_mut()
-                        .0
-                        .entry(key.clone())
-                        .or_insert_with(BeliefMap::new)
-                        .0
-                        .remove(&tid)
-                        .unwrap_or_default()
-                };
+                // Guard: never overwrite self-originated beliefs.
+                let protected = self
+                    .beliefs()
+                    .0
+                    .get(&key)
+                    .and_then(|bm| bm.0.get(&tid))
+                    .map(|v| v.iter().any(|e| matches!(e.source, BeliefSource::Myself)))
+                    .unwrap_or(false);
+
+                if protected {
+                    continue;
+                }
+
+                let existing = self
+                    .beliefs_mut()
+                    .0
+                    .entry(key.clone())
+                    .or_insert_with(BeliefMap::new)
+                    .0
+                    .remove(&tid)
+                    .unwrap_or_default();
 
                 let merged = self.resolve_belief(&key, from, existing, ientry);
 
@@ -319,19 +459,16 @@ pub trait World {
     fn agents_mut(&mut self) -> &mut HashMap<AgentId, Box<dyn Agent>>;
 
     fn dispatch(&mut self, initial: Message) {
-        let mut queue = VecDeque::new();
+        let mut queue = std::collections::VecDeque::new();
         queue.push_back(initial);
-
         while let Some(mut msg) = queue.pop_front() {
             if msg.ttl == 0 {
                 continue;
             }
             msg.ttl -= 1;
-
             let Some(recipient) = self.agents_mut().get_mut(&msg.to) else {
                 continue;
             };
-
             let responses = recipient.on_message(msg);
             queue.extend(responses);
         }
