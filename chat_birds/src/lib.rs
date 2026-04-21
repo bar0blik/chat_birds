@@ -1,90 +1,172 @@
-//! chat_birds is a lightweight framework for fast, event-driven agent communication.
-//!
-//! The crate provides the communication structure, while leaving policy decisions to user code.
-//! Agents own typed local state, hold beliefs about world subjects, exchange directed messages,
-//! and process events through a TTL-guarded message queue.
-//!
-//! This crate aims to support English-language simulation by assuming any sentence can be expressed
-//! as a set of "be" statements the speaker intrinsically understands the relevant
-//! states.
-//!
-//! Core design points:
-//! - Typed per-agent state via [`StateMap`] keyed by Rust type.
-//! - Belief storage via [`BeliefStore`] keyed by string subjects (including [`AgentId`]).
-//! - Directed [`Message`] values with belief payload plus optional natural-language utterance.
-//! - User-overridable conflict resolution through [`Agent::resolve_belief`].
-//! - Pluggable text encoding/decoding through [`IntoUtterance`] and [`FromUtterance`].
-
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 
-/// Identifier for an agent in the world.
-///
-/// This is intentionally lightweight and copyable, so it can be used as a routing key
-/// in high-frequency message dispatch.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct AgentId(u32);
+// ── Macros ────────────────────────────────────────────────────────────────────
 
-/// Type-erased state item stored in a [`StateMap`].
+/// Implements the `State` trait for a type that derives `Clone`.
 ///
-/// Implementors are user-defined domain types (emotion, position, stamina, etc.) that can be
-/// inserted and retrieved by concrete Rust type.
-trait State: Any + Send + Sync {
-    /// Returns an immutable `Any` view for downcasting.
+/// Eliminates boilerplate for the four required methods: `as_any`, `as_any_mut`,
+/// `into_any`, and `clone_box`.
+///
+/// # Example
+/// ```ignore
+/// #[derive(Clone)]
+/// struct Emotion(String);
+///
+/// impl_state!(Emotion);
+/// ```
+#[macro_export]
+macro_rules! impl_state {
+    ($ty:ty) => {
+        impl $crate::State for $ty {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+            fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+                self
+            }
+            fn clone_box(&self) -> Box<dyn $crate::State> {
+                Box::new(self.clone())
+            }
+        }
+    };
+}
+
+// ── AgentId ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct AgentId(pub u32);
+
+// ── State ─────────────────────────────────────────────────────────────────────
+
+pub trait State: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
-    /// Returns a mutable `Any` view for downcasting.
     fn as_any_mut(&mut self) -> &mut dyn Any;
-    /// Converts boxed state into boxed `Any`.
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
-    /// Clones state behind a trait object.
-    ///
-    /// This replaces a direct `Clone` bound so trait objects can be duplicated.
     fn clone_box(&self) -> Box<dyn State>;
 }
 
-/// Heterogeneous typed storage for an agent's local state.
-///
-/// Values are keyed by `TypeId`, allowing one value per concrete state type.
-struct StateMap(HashMap<TypeId, Box<dyn State>>);
+// ── StateMap (own states — always certain, source = self) ─────────────────────
+
+pub struct StateMap(pub HashMap<TypeId, Box<dyn State>>);
 
 impl StateMap {
-    /// Creates an empty state map.
-    fn new() -> Self {
+    pub fn new() -> Self {
         StateMap(HashMap::new())
     }
 
-    /// Inserts or replaces the state value of type `S`.
-    fn insert<S: State + 'static>(&mut self, s: S) {
+    pub fn insert<S: State + 'static>(&mut self, s: S) {
         self.0.insert(TypeId::of::<S>(), Box::new(s));
     }
 
-    /// Gets a shared reference to state of type `S`.
-    fn get<S: State + 'static>(&self) -> Option<&S> {
+    pub fn get<S: State + 'static>(&self) -> Option<&S> {
         self.0
             .get(&TypeId::of::<S>())
-            .and_then(|boxed| boxed.as_any().downcast_ref::<S>())
+            .and_then(|b| b.as_any().downcast_ref::<S>())
     }
 
-    /// Gets a mutable reference to state of type `S`.
-    fn get_mut<S: State + 'static>(&mut self) -> Option<&mut S> {
+    pub fn get_mut<S: State + 'static>(&mut self) -> Option<&mut S> {
         self.0
             .get_mut(&TypeId::of::<S>())
-            .and_then(|boxed| boxed.as_any_mut().downcast_mut::<S>())
+            .and_then(|b| b.as_any_mut().downcast_mut::<S>())
     }
 
-    /// Removes and returns state of type `S`, if present.
-    fn remove<S: State + 'static>(&mut self) -> Option<Box<dyn State>> {
+    pub fn remove<S: State + 'static>(&mut self) -> Option<Box<dyn State>> {
         self.0.remove(&TypeId::of::<S>())
+    }
+
+    pub fn remove_as<S: State + 'static>(&mut self) -> Option<S> {
+        self.0
+            .remove(&TypeId::of::<S>())
+            .and_then(|b| b.into_any().downcast::<S>().ok())
+            .map(|b| *b)
     }
 }
 
-/// A key that identifies a belief subject in a [`BeliefStore`].
-///
-/// The crate supports both semantic string keys (for world facts) and [`AgentId`]
-/// keys (for agent-centric beliefs).
-trait BeliefKey {
-    /// Converts this key into a canonical string representation.
+// ── Probability ───────────────────────────────────────────────────────────────
+
+pub enum Probability {
+    Level(u8),                 // 0 = impossible, 255 = certain
+    Condition(Box<dyn State>), // true if state holds
+    Always,
+    Never,
+}
+
+// ── Temporal ──────────────────────────────────────────────────────────────────
+
+pub enum Tense {
+    Past,
+    Present,
+    Future,
+}
+
+pub enum Temporal {
+    Clock { hour: u8, minute: u8 },
+    Tense(Tense),
+    Period { start: u64, end: u64 }, // game ticks
+    Always,
+}
+
+// ── BeliefSource ──────────────────────────────────────────────────────────────
+
+pub enum BeliefSource {
+    Myself,
+    Agent(AgentId),
+    Inferred,
+}
+
+// ── BeliefEntry ───────────────────────────────────────────────────────────────
+
+pub struct BeliefEntry {
+    pub state: Box<dyn State>,
+    pub certainty: f32, // 0.0..=1.0
+    pub probability: Probability,
+    pub source: BeliefSource,
+    pub temporal: Temporal,
+}
+
+// ── BeliefMap (beliefs about one subject) ─────────────────────────────────────
+
+pub struct BeliefMap(pub HashMap<TypeId, Vec<BeliefEntry>>);
+
+impl BeliefMap {
+    pub fn new() -> Self {
+        BeliefMap(HashMap::new())
+    }
+
+    pub fn insert<S: State + 'static>(&mut self, entry: BeliefEntry) {
+        self.0.entry(TypeId::of::<S>()).or_default().push(entry);
+    }
+
+    /// Returns highest-certainty entry for type S.
+    pub fn get<S: State + 'static>(&self) -> Option<&BeliefEntry> {
+        self.0.get(&TypeId::of::<S>()).and_then(|v| {
+            v.iter()
+                .max_by(|a, b| a.certainty.partial_cmp(&b.certainty).unwrap())
+        })
+    }
+
+    /// All interpretations for type S.
+    pub fn get_all<S: State + 'static>(&self) -> &[BeliefEntry] {
+        self.0
+            .get(&TypeId::of::<S>())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Replaces all entries for type S — used by resolve_belief output.
+    pub fn set<S: State + 'static>(&mut self, entries: Vec<BeliefEntry>) {
+        self.0.insert(TypeId::of::<S>(), entries);
+    }
+}
+
+// ── BeliefKey ─────────────────────────────────────────────────────────────────
+
+pub trait BeliefKey {
     fn to_key(&self) -> Cow<'_, str>;
 }
 
@@ -106,165 +188,149 @@ impl BeliefKey for String {
     }
 }
 
-/// Beliefs grouped by subject key, each subject holding a typed [`StateMap`].
-///
-/// Typical keys are world labels (for example, `"weather"`) or agent-scoped keys
-/// derived from [`AgentId`].
-struct BeliefStore(HashMap<String, StateMap>);
-
-impl BeliefStore {
-    /// Creates an empty belief store.
-    fn new() -> Self {
-        BeliefStore(HashMap::new())
-    }
-
-    /// Returns beliefs for a subject key.
-    fn get(&self, key: &impl BeliefKey) -> Option<&StateMap> {
-        self.0.get(key.to_key().as_ref())
-    }
-
-    /// Returns mutable beliefs for a subject key.
-    fn get_mut(&mut self, key: &impl BeliefKey) -> Option<&mut StateMap> {
-        self.0.get_mut(key.to_key().as_ref())
-    }
-
-    /// Inserts or replaces the full state map for a subject key.
-    fn insert(&mut self, key: &impl BeliefKey, states: StateMap) {
-        self.0.insert(key.to_key().into_owned(), states);
+/// Blanket impl to allow references to BeliefKey types.
+impl<T: BeliefKey + ?Sized> BeliefKey for &T {
+    fn to_key(&self) -> Cow<'_, str> {
+        (*self).to_key()
     }
 }
 
-/// An actor that owns local state, world beliefs, and message handling behavior.
-///
-/// Implementors define policy: how to react to incoming messages, how to merge beliefs,
-/// and how to resolve conflicts between old and incoming evidence.
-trait Agent {
-    /// Returns this agent's stable identifier.
-    fn id(&self) -> AgentId;
+// ── BeliefStore (beliefs about all subjects) ──────────────────────────────────
 
-    /// Returns immutable access to local typed state.
-    fn states(&self) -> &StateMap;
+pub struct BeliefStore(pub HashMap<String, BeliefMap>);
 
-    /// Returns mutable access to local typed state.
-    fn states_mut(&mut self) -> &mut StateMap;
-
-    /// Returns immutable access to the belief store.
-    fn beliefs(&self) -> &BeliefStore;
-
-    /// Returns mutable access to the belief store.
-    fn beliefs_mut(&mut self) -> &mut BeliefStore;
-
-    /// Handles one incoming message and emits zero or more response messages.
-    ///
-    /// Event flow: receive message, update beliefs, then produce follow-up messages.
-    fn on_message(&mut self, msg: Message) -> Vec<Message>;
-
-    /// Merges message payload beliefs into this agent's belief store.
-    ///
-    /// Implementors can override this to define merge strategy. During merge, conflicts can be
-    /// delegated to [`Self::resolve_belief`].
-    fn merge_payload(&mut self, msg: &Message) {
-        // TODO: loop over BeliefStore and update own StateMap using resolve_belief
+impl BeliefStore {
+    pub fn new() -> Self {
+        BeliefStore(HashMap::new())
     }
 
-    /// Resolves a conflict between an old and incoming belief state.
-    ///
-    /// The default strategy overwrites with `new`. Override to implement trust-weighting,
-    /// source reliability scoring, temporal decay, or other game-specific policy.
+    pub fn get(&self, key: &impl BeliefKey) -> Option<&BeliefMap> {
+        self.0.get(key.to_key().as_ref())
+    }
+
+    pub fn get_mut(&mut self, key: &impl BeliefKey) -> Option<&mut BeliefMap> {
+        self.0.get_mut(key.to_key().as_ref())
+    }
+
+    pub fn get_or_insert(&mut self, key: &impl BeliefKey) -> &mut BeliefMap {
+        self.0
+            .entry(key.to_key().into_owned())
+            .or_insert_with(BeliefMap::new)
+    }
+}
+
+// ── Message ───────────────────────────────────────────────────────────────────
+
+pub struct Message {
+    pub from: AgentId,
+    pub to: AgentId,
+    pub payload: BeliefStore, // slice of sender's beliefs
+    pub utterance: Option<String>,
+    pub ttl: u8,
+}
+
+// ── Utterance ─────────────────────────────────────────────────────────────────
+
+pub trait IntoUtterance {
+    fn to_utterance(&self) -> String;
+}
+
+pub trait FromUtterance: Sized {
+    fn from_utterance(s: &str) -> Option<Self>;
+}
+
+// ── Agent ─────────────────────────────────────────────────────────────────────
+
+pub trait Agent {
+    fn id(&self) -> AgentId;
+
+    /// Own states — fully certain, not overridable by external messages.
+    fn states(&self) -> &StateMap;
+    fn states_mut(&mut self) -> &mut StateMap;
+
+    /// Beliefs about other agents and world entities.
+    fn beliefs(&self) -> &BeliefStore;
+    fn beliefs_mut(&mut self) -> &mut BeliefStore;
+
+    fn on_message(&mut self, msg: Message) -> Vec<Message>;
+
+    /// User-triggered: implement own decay logic (certainty drop, source loss, etc.)
+    fn decay(&mut self);
+
+    /// Conflict resolution. Receives existing entries (moved) + incoming entry.
+    /// Default: append → keeps all interpretations. Override for trust-weighted merging.
     fn resolve_belief(
         &self,
         key: &str,
         from: AgentId,
-        old: &dyn State,
-        new: &dyn State,
-    ) -> Box<dyn State> {
-        new.clone_box()
+        existing: Vec<BeliefEntry>,
+        incoming: BeliefEntry,
+    ) -> Vec<BeliefEntry> {
+        let mut entries = existing;
+        entries.push(incoming);
+        entries
+    }
+
+    /// Merges a payload BeliefStore into self.beliefs, calling resolve_belief
+    /// per entry so trust-weighted conflict resolution is applied automatically.
+    fn merge_payload(&mut self, from: AgentId, mut payload: BeliefStore) {
+        // Collect work upfront to avoid holding borrows during resolution.
+        let work: Vec<(String, TypeId, Vec<BeliefEntry>)> = payload
+            .0
+            .iter_mut()
+            .flat_map(|(key, bmap)| {
+                bmap.0
+                    .drain()
+                    .map(|(tid, entries)| (key.clone(), tid, entries))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        for (key, tid, incoming_entries) in work {
+            for ientry in incoming_entries {
+                // Scoped mut borrow — released before resolve_belief's shared borrow.
+                let existing = {
+                    self.beliefs_mut()
+                        .0
+                        .entry(key.clone())
+                        .or_insert_with(BeliefMap::new)
+                        .0
+                        .remove(&tid)
+                        .unwrap_or_default()
+                };
+
+                let merged = self.resolve_belief(&key, from, existing, ientry);
+
+                self.beliefs_mut()
+                    .0
+                    .entry(key.clone())
+                    .or_insert_with(BeliefMap::new)
+                    .0
+                    .insert(tid, merged);
+            }
+        }
     }
 }
 
-/// Encodes a type into a text utterance.
-///
-/// This trait decouples text representation from core agent/world mechanics.
-trait IntoUtterance {
-    /// Converts this value into a serialized utterance string.
-    fn to_utterance(&self) -> String;
-}
+// ── World ─────────────────────────────────────────────────────────────────────
 
-/// Decodes a type from a text utterance.
-///
-/// Return `None` when parsing fails or input is semantically invalid.
-trait FromUtterance: Sized {
-    /// Attempts to parse a value from an utterance.
-    fn from_utterance(s: &str) -> Option<Self>;
-}
-
-/// Directed message sent from one agent to another.
-///
-/// Messages can carry both structured belief updates (`payload`) and optional free-form
-/// text (`utterance`).
-struct Message {
-    /// Sender agent id.
-    pub from: AgentId,
-    /// Recipient agent id.
-    pub to: AgentId,
-    /// Beliefs communicated by the sender.
-    pub payload: BeliefStore,
-    /// Optional text channel representation.
-    pub utterance: Option<String>,
-    /// Remaining hop budget for queue dispatch.
-    pub ttl: u8,
-}
-
-/// Placeholder text encoder for [`Message`].
-///
-/// Replace this with application-specific serialization.
-impl IntoUtterance for Message {
-    fn to_utterance(&self) -> String {
-        "Placeholder".into()
-    }
-}
-
-/// Placeholder text decoder for [`Message`].
-///
-/// Replace this with application-specific parsing.
-impl FromUtterance for Message {
-    fn from_utterance(s: &str) -> Option<Self> {
-        None
-    }
-}
-
-/// Environment that stores agents and dispatches queued messages.
-///
-/// The default dispatcher performs directed delivery and decrements message TTL each hop,
-/// preventing unbounded loops in cyclic response graphs.
-trait World {
-    /// Returns immutable access to the world agent map.
+pub trait World {
     fn agents(&self) -> &HashMap<AgentId, Box<dyn Agent>>;
-
-    /// Returns mutable access to the world agent map.
     fn agents_mut(&mut self) -> &mut HashMap<AgentId, Box<dyn Agent>>;
 
-    /// Dispatches an initial message and processes the queue until empty.
-    ///
-    /// Behavior:
-    /// - Drops messages targeting unknown agents.
-    /// - Drops messages whose `ttl` is already zero.
-    /// - Decrements TTL before invoking recipient handlers.
-    /// - Enqueues all responses emitted by handlers.
     fn dispatch(&mut self, initial: Message) {
         let mut queue = VecDeque::new();
         queue.push_back(initial);
 
         while let Some(mut msg) = queue.pop_front() {
-            let Some(recipient) = self.agents_mut().get_mut(&msg.to) else {
-                continue;
-            };
-
             if msg.ttl == 0 {
                 continue;
             }
-
             msg.ttl -= 1;
+
+            let Some(recipient) = self.agents_mut().get_mut(&msg.to) else {
+                continue;
+            };
 
             let responses = recipient.on_message(msg);
             queue.extend(responses);
