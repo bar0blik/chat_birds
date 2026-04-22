@@ -61,7 +61,7 @@ struct Npc {
 }
 
 impl Npc {
-    fn new(id: u32, name: &str, personality: Personality) -> Self {
+    fn new(id: u16, name: &str, personality: Personality) -> Self {
         let mut states = StateMap::new();
         states.insert(Health(100.0));
         states.insert(Hunger(20.0));
@@ -263,9 +263,6 @@ impl Agent for Npc {
 
     fn on_message(&mut self, msg: Message) -> Vec<Message> {
         let from = msg.from;
-        if let Some(u) = &msg.utterance {
-            println!("  [{}] hears: {}", self.name, u);
-        }
         self.merge_payload(from, msg.payload);
         println!("  [{}] updated beliefs from agent {}.", self.name, from.0);
         vec![]
@@ -393,8 +390,6 @@ impl Inn {
             from: fid,
             to: tid,
             payload,
-            utterance,
-            ttl: 8,
         };
         self.agents.get_mut(&tid).unwrap().on_message(msg);
     }
