@@ -80,7 +80,8 @@ impl StateMap {
 // ── Probability ───────────────────────────────────────────────────────────────
 //
 // Condition(key): holds if the belief at `key` is present and certain enough.
-// Resolved externally by the user at query time.
+// Gets changed to "always" if the condition is found to be true
+// TODO: maybe change condition to hold a &BeliefEntry
 
 #[derive(Clone, Debug)]
 pub enum Probability {
@@ -537,6 +538,7 @@ impl BeliefMap {
         self.0.entry(TypeId::of::<S>()).or_default().push(entry);
     }
 
+    // TODO: check if partial_cmp is really needed and add time search
     pub fn get<S: State + 'static>(&self) -> Option<&BeliefEntry> {
         self.0.get(&TypeId::of::<S>()).and_then(|v| {
             v.iter()
