@@ -1,6 +1,7 @@
 use crate::belief::{BeliefEntry, BeliefMap, BeliefSource, BeliefStore};
 use crate::core::{AgentId, StateMap};
 use crate::message::Message;
+use crate::source::{SourceMap, Trust};
 
 /// The Agent trait defines behavior for NPCs and other autonomous entities.
 ///
@@ -24,6 +25,22 @@ pub trait Agent {
 
     /// Get a mutable reference to this agent's belief store.
     fn beliefs_mut(&mut self) -> &mut BeliefStore;
+
+    /// Get a reference to this agent's source map.
+    fn source_map(&self) -> &SourceMap;
+
+    /// Get a mutable reference to this agent's source map.
+    fn source_map_mut(&mut self) -> &mut SourceMap;
+
+    /// Get a source agent's trust level.
+    fn get_source_trust(&self, source: AgentId) -> Option<Trust> {
+        self.source_map().get(source)
+    }
+
+    /// Set a source agent's trust level and return the previous trust level.
+    fn set_source_trust(&mut self, source: AgentId, trust: Trust) -> Option<Trust> {
+        self.source_map_mut().set(source, trust)
+    }
 
     /// Handle an incoming message. Return a list of messages to send in response.
     fn on_message(&mut self, msg: Message) -> Vec<Message>;

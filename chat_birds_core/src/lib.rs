@@ -18,6 +18,7 @@
 //! - [`core`]: Core types (AgentId, State trait, StateMap, Probability)
 //! - [`temporal`]: Temporal representation (Tense, Timestamp with compact 64-bit encoding, Temporal)
 //! - [`belief`]: Belief system (BeliefEntry, BeliefMap, BeliefStore, BeliefKey, NestedBelief)
+//! - [`source`]: Sourcing system (SourceMap, Trust)
 //! - [`registry`]: Type metadata (StateRegistry for aliases and composites)
 //! - [`message`]: Communication (Message, MessageCodec, IntoUtterance, FromUtterance)
 //! - [`agent`]: Agent trait and behavior
@@ -28,6 +29,7 @@ pub mod belief;
 pub mod core;
 pub mod message;
 pub mod registry;
+pub mod source;
 pub mod temporal;
 pub mod world;
 
@@ -37,5 +39,6 @@ pub use belief::{BeliefEntry, BeliefKey, BeliefMap, BeliefSource, BeliefStore, N
 pub use core::{AgentId, Probability, State, StateMap};
 pub use message::{FromUtterance, IntoUtterance, Message, MessageCodec};
 pub use registry::StateRegistry;
+pub use source::{SourceMap, Trust};
 pub use temporal::{Temporal, Tense, Timestamp};
 pub use world::World;
