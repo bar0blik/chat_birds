@@ -39,6 +39,3 @@ pub use message::{FromUtterance, IntoUtterance, Message, MessageCodec};
 pub use registry::StateRegistry;
 pub use temporal::{Temporal, Tense, Timestamp};
 pub use world::World;
-
-// Re-export the impl_state macro
-pub use crate::core::{impl_state};

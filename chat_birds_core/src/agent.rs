@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::belief::{BeliefEntry, BeliefMap, BeliefSource, BeliefStore};
 use crate::core::{AgentId, StateMap};
 use crate::message::Message;
