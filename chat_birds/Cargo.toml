@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 chat_birds_core = { path = "../chat_birds_core" }
+num-traits = "0.2.19"

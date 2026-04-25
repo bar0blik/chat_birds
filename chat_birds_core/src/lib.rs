@@ -40,5 +40,5 @@ pub use core::{AgentId, Probability, State, StateMap};
 pub use message::{FromUtterance, IntoUtterance, Message, MessageCodec};
 pub use registry::StateRegistry;
 pub use source::{SourceMap, Trust};
-pub use temporal::{Temporal, Tense, Timestamp};
+pub use temporal::{Temporal, TenseTime, Timestamp};
 pub use world::World;

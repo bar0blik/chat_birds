@@ -1,5 +1,6 @@
 use std::any::TypeId;
 use std::borrow::Cow;
+use std::collections::hash_map::{IntoIter, Iter, IterMut};
 use std::collections::HashMap;
 
 use crate::core::{AgentId, Probability, State};
@@ -46,6 +47,14 @@ impl BeliefMap {
         BeliefMap(HashMap::new())
     }
 
+    pub fn iter(&self) -> Iter<'_, TypeId, Vec<BeliefEntry>> {
+        self.0.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> IterMut<'_, TypeId, Vec<BeliefEntry>> {
+        self.0.iter_mut()
+    }
+
     pub fn insert<S: State + 'static>(&mut self, entry: BeliefEntry) {
         self.0.entry(TypeId::of::<S>()).or_default().push(entry);
     }
@@ -75,6 +84,33 @@ impl BeliefMap {
 impl Default for BeliefMap {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl IntoIterator for BeliefMap {
+    type Item = (TypeId, Vec<BeliefEntry>);
+    type IntoIter = IntoIter<TypeId, Vec<BeliefEntry>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a BeliefMap {
+    type Item = (&'a TypeId, &'a Vec<BeliefEntry>);
+    type IntoIter = Iter<'a, TypeId, Vec<BeliefEntry>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut BeliefMap {
+    type Item = (&'a TypeId, &'a mut Vec<BeliefEntry>);
+    type IntoIter = IterMut<'a, TypeId, Vec<BeliefEntry>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
     }
 }
 

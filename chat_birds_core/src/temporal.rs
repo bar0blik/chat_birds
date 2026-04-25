@@ -1,6 +1,6 @@
 /// Temporal perspectives for beliefs.
 #[derive(Clone, Debug)]
-pub enum Tense {
+pub enum TenseTime {
     Past,
     Present,
     Future,
@@ -370,7 +370,7 @@ impl std::fmt::Debug for Timestamp {
 #[derive(Clone, Debug)]
 pub enum Temporal {
     Timestamp(Timestamp),
-    Tense(Tense),
+    Tense(TenseTime),
     Period { start: Timestamp, end: Timestamp },
     Always,
 }
