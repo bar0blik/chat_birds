@@ -1,3 +1,4 @@
+use crate::identity::RefState;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
@@ -11,6 +12,11 @@ pub trait State: Any + Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
     fn clone_box(&self) -> Box<dyn State>;
+
+    /// Hook for RefState: override to expose reference capability
+    fn as_ref_state(&self) -> Option<&dyn RefState> {
+        None
+    }
 }
 
 /// Generates a State trait implementation for any Clone type.

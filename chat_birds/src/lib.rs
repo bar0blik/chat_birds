@@ -1,3 +1,4 @@
 pub use chat_birds_core::*;
 pub mod encoding;
-pub mod verbs;
+pub mod states;
+pub mod verb;

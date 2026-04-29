@@ -1,4 +1,4 @@
-use crate::encoding::{Person, Verb};
+use super::{Person, Verb};
 
 pub struct Be;
 

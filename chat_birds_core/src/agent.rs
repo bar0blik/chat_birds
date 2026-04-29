@@ -1,4 +1,5 @@
-use crate::belief::{BeliefEntry, BeliefMap, BeliefSource, BeliefStore};
+use crate::belief::BeliefSet;
+use crate::belief::{Belief, BeliefSource, BeliefStore, SubjectBeliefs};
 use crate::core::{AgentId, StateMap};
 use crate::message::Message;
 use crate::source::{SourceMap, Trust};
@@ -53,7 +54,7 @@ pub trait Agent {
     /// Override for custom decay strategies.
     fn decay(&mut self) {
         for (_, bmap) in self.beliefs_mut().0.iter_mut() {
-            for (_, entries) in bmap.0.iter_mut() {
+            for (_, entries) in bmap.map.iter_mut() {
                 for e in entries.iter_mut() {
                     e.certainty = e.certainty.saturating_sub(38);
                     // Source degrades as certainty fades: Agent → Inferred
@@ -79,13 +80,13 @@ pub trait Agent {
         &self,
         key: &str,
         from: AgentId,
-        existing: Vec<BeliefEntry>,
-        incoming: BeliefEntry,
-    ) -> Vec<BeliefEntry> {
+        existing: BeliefSet,
+        incoming: Belief,
+    ) -> BeliefSet {
         let _ = (key, from);
         let incoming_tid = incoming.state.as_any().type_id();
         let incoming_cert = incoming.certainty;
-        let mut result: Vec<BeliefEntry> = existing
+        let mut result: BeliefSet = existing
             .into_iter()
             .filter(|e| {
                 !(e.state.as_any().type_id() == incoming_tid && incoming_cert >= e.certainty)
@@ -99,11 +100,13 @@ pub trait Agent {
     /// Calls `resolve_belief` for each entry.
     /// Entries originally from `Myself` are never overwritten.
     fn merge_payload(&mut self, from: AgentId, mut payload: BeliefStore) {
-        let work: Vec<(String, std::any::TypeId, Vec<BeliefEntry>)> = payload
+        let work: Vec<(String, std::any::TypeId, BeliefSet)> = payload
             .0
             .iter_mut()
-            .flat_map(|(key, bmap)| {
-                bmap.0
+            .flat_map(|(key, subject)| {
+                subject
+                    .map
+                    .0
                     .drain()
                     .map(|(tid, entries)| (key.clone(), tid, entries))
                     .collect::<Vec<_>>()
@@ -117,8 +120,12 @@ pub trait Agent {
                     .beliefs()
                     .0
                     .get(&key)
-                    .and_then(|bm| bm.0.get(&tid))
-                    .map(|v| v.iter().any(|e| matches!(e.source, BeliefSource::Myself)))
+                    .and_then(|subject| subject.map.0.get(&tid))
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .any(|e| matches!(e.source, BeliefSource::Myself))
+                    })
                     .unwrap_or(false);
 
                 if protected {
@@ -129,7 +136,8 @@ pub trait Agent {
                     .beliefs_mut()
                     .0
                     .entry(key.clone())
-                    .or_insert_with(BeliefMap::new)
+                    .or_insert_with(SubjectBeliefs::new)
+                    .map
                     .0
                     .remove(&tid)
                     .unwrap_or_default();
@@ -139,7 +147,8 @@ pub trait Agent {
                 self.beliefs_mut()
                     .0
                     .entry(key.clone())
-                    .or_insert_with(BeliefMap::new)
+                    .or_insert_with(SubjectBeliefs::new)
+                    .map
                     .0
                     .insert(tid, merged);
             }

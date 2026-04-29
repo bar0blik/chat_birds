@@ -88,7 +88,7 @@ impl Npc {
         let mut store = BeliefStore::new();
         let bmap = store.get_or_insert(&self.name.as_str());
         for (tid, state) in &self.states.0 {
-            bmap.0.entry(*tid).or_default().push(BeliefEntry {
+            bmap.0.entry(*tid).or_default().push(Belief {
                 state: state.clone_box(),
                 certainty: 255,
                 probability: Probability::Always,
@@ -176,7 +176,7 @@ impl Npc {
         }
     }
 
-    fn describe_entry(e: &BeliefEntry) -> String {
+    fn describe_entry(e: &Belief) -> String {
         let s = &e.state;
         let cert = (u16::from(e.certainty) * 100) / 255;
         let src = match &e.source {
@@ -312,14 +312,14 @@ impl Agent for Npc {
         &self,
         _key: &str,
         from: AgentId,
-        existing: Vec<BeliefEntry>,
-        mut incoming: BeliefEntry,
-    ) -> Vec<BeliefEntry> {
+        existing: Vec<Belief>,
+        mut incoming: Belief,
+    ) -> Vec<Belief> {
         let scaled = (f32::from(incoming.certainty) * self.get_trust(from)).round();
         incoming.certainty = scaled.clamp(0.0, 255.0) as u8;
         let tid = incoming.state.as_any().type_id();
         let cert = incoming.certainty;
-        let mut result: Vec<BeliefEntry> = existing
+        let mut result: Vec<Belief> = existing
             .into_iter()
             .filter(|e| !(e.state.as_any().type_id() == tid && cert >= e.certainty))
             .collect();

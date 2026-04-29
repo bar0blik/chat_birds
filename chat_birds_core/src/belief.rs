@@ -1,3 +1,10 @@
+//! Agent holds a BeliefStore
+//! A BeliefStore maps each string key (subject) to a SubjectBeliefs
+//! A SubjectBeliefs holds info about the subject (plurality) and its BeliefMap
+//! A BeliefMap maps a State's TypeId to a BeliefSet
+//! A BeliefEntryVec is a SmallVec of BeliefEntry
+//! A BeliefEntry stores the actual State and the certainty, probability, source and the temporality of the State
+use smallvec::SmallVec;
 use std::any::TypeId;
 use std::borrow::Cow;
 use std::collections::hash_map::{IntoIter, Iter, IterMut};
@@ -17,8 +24,8 @@ pub enum BeliefSource {
     Inferred,
 }
 
-/// A single belief entry: a state object with certainty, source, temporal context.
-pub struct BeliefEntry {
+/// A single belief: a state object with certainty, source, temporal context.
+pub struct Belief {
     pub state: Box<dyn State>,
     pub certainty: u8, // 0..=255
     pub probability: Probability,
@@ -26,10 +33,10 @@ pub struct BeliefEntry {
     pub temporal: Temporal,
 }
 
-impl BeliefEntry {
-    /// Clone this entry, including deep cloning of the state object.
-    pub fn clone_entry(&self) -> BeliefEntry {
-        BeliefEntry {
+impl Clone for Belief {
+    /// Clone this belief, including deep cloning of the state object.
+    fn clone(&self) -> Belief {
+        Belief {
             state: self.state.clone_box(),
             certainty: self.certainty,
             probability: self.probability.clone(),
@@ -39,45 +46,49 @@ impl BeliefEntry {
     }
 }
 
+/// Collection of belief entries
+/// ```ignore
+/// pub type BeliefSet = SmallVec<[Belief; 1]>;
+/// ```
+pub type BeliefSet = SmallVec<[Belief; 1]>;
+
+/// Query parameters to search a belief map
+pub struct QueryParam;
+
 /// All belief entries for a single subject (keyed by type).
-pub struct BeliefMap(pub HashMap<TypeId, Vec<BeliefEntry>>);
+#[derive(Clone)]
+pub struct BeliefMap(pub HashMap<TypeId, BeliefSet>);
 
 impl BeliefMap {
     pub fn new() -> Self {
         BeliefMap(HashMap::new())
     }
 
-    pub fn iter(&self) -> Iter<'_, TypeId, Vec<BeliefEntry>> {
+    pub fn iter(&self) -> Iter<'_, TypeId, BeliefSet> {
         self.0.iter()
     }
 
-    pub fn iter_mut(&mut self) -> IterMut<'_, TypeId, Vec<BeliefEntry>> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, TypeId, BeliefSet> {
         self.0.iter_mut()
     }
 
-    pub fn insert<S: State + 'static>(&mut self, entry: BeliefEntry) {
+    pub fn insert<S: State + 'static>(&mut self, entry: Belief) {
         self.0.entry(TypeId::of::<S>()).or_default().push(entry);
     }
 
     /// Get the highest-certainty entry for state type S. Returns None if no entries exist.
-    pub fn get<S: State + 'static>(&self) -> Option<&BeliefEntry> {
-        self.0.get(&TypeId::of::<S>()).and_then(|v| {
-            v.iter()
-                .max_by(|a, b| a.certainty.partial_cmp(&b.certainty).unwrap())
-        })
+    pub fn query<S: State + 'static>(&self, _param: QueryParam) -> Vec<&Belief> {
+        Vec::new()
     }
 
     /// Get all entries for state type S.
-    pub fn get_all<S: State + 'static>(&self) -> &[BeliefEntry] {
-        self.0
-            .get(&TypeId::of::<S>())
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+    pub fn get_vec<S: State + 'static>(&self) -> Option<&BeliefSet> {
+        self.0.get(&TypeId::of::<S>())
     }
 
-    /// Replace all entries for state type S with a new vector.
-    pub fn set<S: State + 'static>(&mut self, entries: Vec<BeliefEntry>) {
-        self.0.insert(TypeId::of::<S>(), entries);
+    /// Get all entries as mutable for state type S.
+    pub fn get_vec_mut<S: State + 'static>(&mut self) -> Option<&mut BeliefSet> {
+        self.0.get_mut(&TypeId::of::<S>())
     }
 }
 
@@ -88,8 +99,8 @@ impl Default for BeliefMap {
 }
 
 impl IntoIterator for BeliefMap {
-    type Item = (TypeId, Vec<BeliefEntry>);
-    type IntoIter = IntoIter<TypeId, Vec<BeliefEntry>>;
+    type Item = (TypeId, BeliefSet);
+    type IntoIter = IntoIter<TypeId, BeliefSet>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -97,8 +108,8 @@ impl IntoIterator for BeliefMap {
 }
 
 impl<'a> IntoIterator for &'a BeliefMap {
-    type Item = (&'a TypeId, &'a Vec<BeliefEntry>);
-    type IntoIter = Iter<'a, TypeId, Vec<BeliefEntry>>;
+    type Item = (&'a TypeId, &'a BeliefSet);
+    type IntoIter = Iter<'a, TypeId, BeliefSet>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
@@ -106,8 +117,8 @@ impl<'a> IntoIterator for &'a BeliefMap {
 }
 
 impl<'a> IntoIterator for &'a mut BeliefMap {
-    type Item = (&'a TypeId, &'a mut Vec<BeliefEntry>);
-    type IntoIter = IterMut<'a, TypeId, Vec<BeliefEntry>>;
+    type Item = (&'a TypeId, &'a mut BeliefSet);
+    type IntoIter = IterMut<'a, TypeId, BeliefSet>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter_mut()
@@ -160,45 +171,45 @@ impl State for NestedBelief {
     }
 }
 
+#[derive(Clone)]
+pub struct SubjectBeliefs {
+    pub plural: bool,
+    pub map: BeliefMap,
+}
+
+impl SubjectBeliefs {
+    pub fn new() -> Self {
+        Self {
+            plural: false,
+            map: BeliefMap::new(),
+        }
+    }
+}
+
 /// The complete belief store for an agent: all subjects and their beliefs.
 ///
-/// Maps subject keys (strings) → BeliefMap (type → entries).
+/// Maps subject keys (strings) → (plural flag, BeliefMap (type → entries)).
 /// Subject keys can be agent identifiers ("agent:1"), description keys ("in_box"), etc.
-pub struct BeliefStore(pub HashMap<String, BeliefMap>);
+#[derive(Clone)]
+pub struct BeliefStore(pub HashMap<String, SubjectBeliefs>);
 
 impl BeliefStore {
     pub fn new() -> Self {
         BeliefStore(HashMap::new())
     }
 
-    pub fn get(&self, key: &impl BeliefKey) -> Option<&BeliefMap> {
+    pub fn get(&self, key: &impl BeliefKey) -> Option<&SubjectBeliefs> {
         self.0.get(key.to_key().as_ref())
     }
 
-    pub fn get_mut(&mut self, key: &impl BeliefKey) -> Option<&mut BeliefMap> {
+    pub fn get_mut(&mut self, key: &impl BeliefKey) -> Option<&mut SubjectBeliefs> {
         self.0.get_mut(key.to_key().as_ref())
     }
 
-    pub fn get_or_insert(&mut self, key: &impl BeliefKey) -> &mut BeliefMap {
+    pub fn get_or_insert(&mut self, key: &impl BeliefKey) -> &mut SubjectBeliefs {
         self.0
             .entry(key.to_key().into_owned())
-            .or_insert_with(BeliefMap::new)
-    }
-}
-
-impl Clone for BeliefStore {
-    fn clone(&self) -> Self {
-        let mut map = HashMap::new();
-        for (key, bmap) in &self.0 {
-            let mut new_bmap = BeliefMap::new();
-            for (tid, entries) in &bmap.0 {
-                new_bmap
-                    .0
-                    .insert(*tid, entries.iter().map(|e| e.clone_entry()).collect());
-            }
-            map.insert(key.clone(), new_bmap);
-        }
-        BeliefStore(map)
+            .or_insert_with(SubjectBeliefs::new)
     }
 }
 
