@@ -1,4 +1,3 @@
-use crate::BeliefMap;
 use crate::{core::State, impl_state};
 
 use std::borrow::Cow;

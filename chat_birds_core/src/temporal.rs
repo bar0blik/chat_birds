@@ -1,5 +1,7 @@
+use std::cmp::Ordering;
+
 /// Temporal perspectives for beliefs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum TenseTime {
     Past,
     Present,
@@ -18,7 +20,7 @@ pub enum TenseTime {
 ///
 /// A fully specified timestamp uses 12×31×24×60×60 = 32_140_800 states (25 bits).
 /// This leaves room for a massive year range (~550 billion years representable).
-#[derive(Clone)]
+#[derive(Clone, PartialEq, PartialOrd)]
 pub struct Timestamp(u64);
 
 impl Timestamp {
@@ -371,6 +373,294 @@ impl std::fmt::Debug for Timestamp {
 pub enum Temporal {
     Timestamp(Timestamp),
     Tense(TenseTime),
-    Period { start: Timestamp, end: Timestamp },
+    Period {
+        start: Box<Temporal>,
+        end: Box<Temporal>,
+    },
     Always,
+}
+
+impl PartialEq for Temporal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Temporal::Always, Temporal::Always) => true,
+
+            (Temporal::Timestamp(a), Temporal::Timestamp(b)) => a.0 == b.0,
+
+            (Temporal::Tense(a), Temporal::Tense(b)) => a == b,
+
+            (Temporal::Period { start: s1, end: e1 }, Temporal::Period { start: s2, end: e2 }) => {
+                **s1 == **s2 && **e1 == **e2
+            }
+
+            // A period with identical bounds equals the bound itself (via recursive comparison).
+            (Temporal::Period { start, end }, other) | (other, Temporal::Period { start, end }) => {
+                **start == **end && **start == *other
+            }
+
+            // Different variants or non-matching bounds are not equal.
+            _ => false,
+        }
+    }
+}
+
+impl PartialOrd for Temporal {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self == other {
+            Some(Ordering::Equal)
+        } else {
+            match (self, other) {
+                (Temporal::Timestamp(a), Temporal::Timestamp(b)) => a.partial_cmp(b),
+                (Temporal::Tense(a), Temporal::Tense(b)) => match (a, b) {
+                    (TenseTime::Past, TenseTime::Past) => Some(Ordering::Equal),
+                    (TenseTime::Present, TenseTime::Present) => Some(Ordering::Equal),
+                    (TenseTime::Future, TenseTime::Future) => Some(Ordering::Equal),
+                    (TenseTime::Past, TenseTime::Present) => Some(Ordering::Less),
+                    (TenseTime::Present, TenseTime::Future) => Some(Ordering::Less),
+                    (TenseTime::Past, TenseTime::Future) => Some(Ordering::Less),
+                    (TenseTime::Present, TenseTime::Past) => Some(Ordering::Greater),
+                    (TenseTime::Future, TenseTime::Present) => Some(Ordering::Greater),
+                    (TenseTime::Future, TenseTime::Past) => Some(Ordering::Greater),
+                },
+                (
+                    Temporal::Period { start: s1, end: e1 },
+                    Temporal::Period { start: s2, end: e2 },
+                ) => {
+                    // Check if s2 <= e2 <= s1 <= e1 (B contained/before A, so A > B)
+                    let s2_le_e2 =
+                        matches!(s2.partial_cmp(e2), Some(Ordering::Less | Ordering::Equal));
+                    let e2_le_s1 =
+                        matches!(e2.partial_cmp(s1), Some(Ordering::Less | Ordering::Equal));
+                    let s1_le_e1 =
+                        matches!(s1.partial_cmp(e1), Some(Ordering::Less | Ordering::Equal));
+
+                    if s2_le_e2 && e2_le_s1 && s1_le_e1 {
+                        return Some(Ordering::Greater);
+                    }
+
+                    // Check if s1 <= e1 <= s2 <= e2 (A contained/before B, so A < B)
+                    let e1_le_s2 =
+                        matches!(e1.partial_cmp(s2), Some(Ordering::Less | Ordering::Equal));
+
+                    if s1_le_e1 && e1_le_s2 && s2_le_e2 {
+                        return Some(Ordering::Less);
+                    }
+
+                    None
+                }
+                (Temporal::Period { start, end }, Temporal::Timestamp(t)) => {
+                    // Check if period is valid: start <= end
+                    let s_le_e = matches!(
+                        start.as_ref().partial_cmp(end.as_ref()),
+                        Some(Ordering::Less | Ordering::Equal)
+                    );
+                    if !s_le_e {
+                        return None;
+                    }
+
+                    let t_temporal = Temporal::Timestamp(t.clone());
+                    // Check if t < s: if true, period > timestamp
+                    let t_before_s = matches!(
+                        start.as_ref().partial_cmp(&t_temporal),
+                        Some(Ordering::Greater)
+                    );
+                    if t_before_s {
+                        return Some(Ordering::Greater);
+                    }
+
+                    // Check if t > e: if true, period < timestamp
+                    let t_after_e =
+                        matches!(end.as_ref().partial_cmp(&t_temporal), Some(Ordering::Less));
+                    if t_after_e {
+                        return Some(Ordering::Less);
+                    }
+
+                    None
+                }
+                (Temporal::Timestamp(t), Temporal::Period { start, end }) => {
+                    let s_le_e = matches!(
+                        start.as_ref().partial_cmp(end.as_ref()),
+                        Some(Ordering::Less | Ordering::Equal)
+                    );
+                    if !s_le_e {
+                        return None;
+                    }
+
+                    let t_temporal = Temporal::Timestamp(t.clone());
+                    let t_before_s = matches!(
+                        start.as_ref().partial_cmp(&t_temporal),
+                        Some(Ordering::Greater)
+                    );
+                    if t_before_s {
+                        return Some(Ordering::Less);
+                    }
+
+                    let t_after_e =
+                        matches!(end.as_ref().partial_cmp(&t_temporal), Some(Ordering::Less));
+                    if t_after_e {
+                        return Some(Ordering::Greater);
+                    }
+
+                    None
+                }
+                (Temporal::Period { start, end }, Temporal::Tense(t)) => {
+                    // Check if period is valid: start <= end
+                    let s_le_e = matches!(
+                        start.as_ref().partial_cmp(end.as_ref()),
+                        Some(Ordering::Less | Ordering::Equal)
+                    );
+                    if !s_le_e {
+                        return None;
+                    }
+
+                    let t_temporal = Temporal::Tense(*t);
+                    // Check if t < s: if true, period > tense
+                    let t_before_s = matches!(
+                        start.as_ref().partial_cmp(&t_temporal),
+                        Some(Ordering::Greater)
+                    );
+                    if t_before_s {
+                        return Some(Ordering::Greater);
+                    }
+
+                    // Check if t > e: if true, period < tense
+                    let t_after_e =
+                        matches!(end.as_ref().partial_cmp(&t_temporal), Some(Ordering::Less));
+                    if t_after_e {
+                        return Some(Ordering::Less);
+                    }
+
+                    None
+                }
+                (Temporal::Tense(t), Temporal::Period { start, end }) => {
+                    let s_le_e = matches!(
+                        start.as_ref().partial_cmp(end.as_ref()),
+                        Some(Ordering::Less | Ordering::Equal)
+                    );
+                    if !s_le_e {
+                        return None;
+                    }
+
+                    let t_temporal = Temporal::Tense(*t);
+                    let t_before_s = matches!(
+                        start.as_ref().partial_cmp(&t_temporal),
+                        Some(Ordering::Greater)
+                    );
+                    if t_before_s {
+                        return Some(Ordering::Less);
+                    }
+
+                    let t_after_e =
+                        matches!(end.as_ref().partial_cmp(&t_temporal), Some(Ordering::Less));
+                    if t_after_e {
+                        return Some(Ordering::Greater);
+                    }
+
+                    None
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
+pub struct Clock(pub Box<dyn Fn() -> Timestamp + Send + Sync>);
+
+impl Clock {
+    pub fn now(&self) -> Timestamp {
+        (self.0)()
+    }
+
+    pub fn system() -> Self {
+        Clock(Box::new(|| {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            // Unix epoch = 1970, encode as year offset
+            let year = 1970 + secs / 31_536_000;
+            let rem = secs % 31_536_000;
+            let month = (rem / 2_592_000) as u8 + 1;
+            let rem = rem % 2_592_000;
+            let day = (rem / 86_400) as u8 + 1;
+            let rem = rem % 86_400;
+            let hour = (rem / 3_600) as u8;
+            let rem = rem % 3_600;
+            let minute = (rem / 60) as u8;
+            let second = (rem % 60) as u8;
+
+            let mut t = Timestamp::empty();
+            t.set_year(Some(year));
+            t.set_month(Some(month));
+            t.set_day(Some(day));
+            t.set_hour(Some(hour));
+            t.set_minute(Some(minute));
+            t.set_second(Some(second));
+            t
+        }))
+    }
+
+    /// Game/sim clock — user supplies tick→Timestamp conversion.
+    pub fn custom(f: impl Fn() -> Timestamp + Send + Sync + 'static) -> Self {
+        Clock(Box::new(f))
+    }
+
+    /// Compare a Temporal against "now" with a scope tolerance.
+    ///
+    /// First tries standard `partial_cmp`. If that returns `None` (incomparable),
+    /// uses the scope to define a "Present" window: [now - scope.0, now + scope.0].
+    ///
+    /// For Timestamps: returns `Equal` if within scope, `Less` if before, `Greater` if after.
+    /// For Periods: returns `Equal` if both bounds fit within scope, else `Less`/`Greater`/`None`.
+    /// For other Temporals: returns `None` if not directly comparable.
+    pub fn cmp_temporal_with_scope(
+        &self,
+        temporal: &Temporal,
+        scope: &Timestamp,
+    ) -> Option<Ordering> {
+        let now = self.now();
+
+        // Use scope first to define Present around now.
+        let scope_val = scope.0;
+        let now_lower = Timestamp(now.0.saturating_sub(scope_val));
+        let now_upper = Timestamp(now.0.saturating_add(scope_val));
+
+        match temporal {
+            Temporal::Timestamp(t) => {
+                // Check if t fits within [now_lower, now_upper].
+                if t.0 >= now_lower.0 && t.0 <= now_upper.0 {
+                    Some(Ordering::Equal) // Within scope → "Present"
+                } else if t.0 < now_lower.0 {
+                    Some(Ordering::Less) // Before scope → "Past"
+                } else {
+                    Some(Ordering::Greater) // After scope → "Future"
+                }
+            }
+            Temporal::Period { start, end } => {
+                // Try to extract timestamps from both bounds.
+                if let (Temporal::Timestamp(s), Temporal::Timestamp(e)) =
+                    (start.as_ref(), end.as_ref())
+                {
+                    // Check if both bounds fit within [now_lower, now_upper].
+                    if s.0 >= now_lower.0 && e.0 <= now_upper.0 {
+                        Some(Ordering::Equal) // Both bounds within scope
+                    } else if e.0 < now_lower.0 {
+                        Some(Ordering::Less) // Period ends before scope
+                    } else if s.0 > now_upper.0 {
+                        Some(Ordering::Greater) // Period starts after scope
+                    } else {
+                        // Scope cannot decide for overlap; fall back to normal comparison.
+                        temporal.partial_cmp(&Temporal::Timestamp(now.clone()))
+                    }
+                } else {
+                    // Non-timestamp period bounds: fall back to normal comparison.
+                    temporal.partial_cmp(&Temporal::Timestamp(now.clone()))
+                }
+            }
+            // Other variants: let regular temporal ordering decide.
+            _ => temporal.partial_cmp(&Temporal::Timestamp(now)),
+        }
+    }
 }

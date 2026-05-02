@@ -16,7 +16,7 @@
 //! ## Module Organization
 //!
 //! - [`core`]: Core types (AgentId, State trait, StateMap, Probability)
-//! - [`temporal`]: Temporal representation (Tense, Timestamp with compact 64-bit encoding, Temporal)
+//! - [`temporal`]: Temporal representation (Tense, Timestamp with compact 64-bit encoding, Temporal, global Clock)
 //! - [`belief`]: Belief system (Belief, BeliefMap, BeliefStore, BeliefKey, NestedBelief)
 //! - [`source`]: Sourcing system (SourceMap, Trust)
 //! - [`registry`]: Type metadata (StateRegistry for aliases and composites)
@@ -46,5 +46,5 @@ pub use identity::{Nature, RefState};
 pub use message::{FromUtterance, IntoUtterance, Message, MessageCodec};
 pub use registry::StateRegistry;
 pub use source::{SourceMap, Trust};
-pub use temporal::{Temporal, TenseTime, Timestamp};
+pub use temporal::{Clock, Temporal, TenseTime, Timestamp};
 pub use world::World;
