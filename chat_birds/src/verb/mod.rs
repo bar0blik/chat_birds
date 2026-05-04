@@ -25,10 +25,7 @@ fn should_double_final_consonant(base: &str) -> bool {
         return false;
     };
 
-    is_consonant(prev)
-        && is_vowel(middle)
-        && is_consonant(last)
-        && !matches!(last, 'w' | 'x' | 'y')
+    is_consonant(prev) && is_vowel(middle) && is_consonant(last) && !matches!(last, 'w' | 'x' | 'y')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,9 +58,12 @@ pub enum Verb {
     SemiIrregular {
         base: String,
         past: String,
-        past_participle: Option<String>,    // None = same as past
-        present_participle: Option<String>, // None = base + "ing"
-        third_person: Option<String>,       // None = base + "s"
+        /// None = same as past
+        past_participle: Option<String>,
+        /// None = base + "ing"
+        present_participle: Option<String>,
+        /// None = base + "s"
+        third_person: Option<String>,
     },
 
     /// Fully suppletive verb with custom conjugation functions.

@@ -20,6 +20,12 @@ pub trait World {
     /// Get a mutable reference to all agents.
     fn agents_mut(&mut self) -> &mut HashMap<AgentId, Box<dyn Agent>>;
 
+    /// Add an agent to the world.
+    fn add_agent(&mut self, agent: Box<dyn Agent>) {
+        let id = agent.id();
+        self.agents_mut().insert(id, agent);
+    }
+
     /// Dispatch a message to its recipient. Handles routing and chains responses.
     ///
     /// Uses a simple FIFO queue: processes the initial message's recipient,

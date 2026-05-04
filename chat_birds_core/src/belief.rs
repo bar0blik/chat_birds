@@ -211,11 +211,46 @@ impl BeliefStore {
             .entry(key.to_key().into_owned())
             .or_insert_with(SubjectBeliefs::new)
     }
+
+    pub fn insert(
+        &mut self,
+        key: &impl BeliefKey,
+        value: SubjectBeliefs,
+    ) -> Option<SubjectBeliefs> {
+        self.0.insert(key.to_key().into_owned(), value)
+    }
 }
 
 impl Default for BeliefStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl IntoIterator for BeliefStore {
+    type Item = (String, SubjectBeliefs);
+    type IntoIter = IntoIter<String, SubjectBeliefs>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a BeliefStore {
+    type Item = (&'a String, &'a SubjectBeliefs);
+    type IntoIter = Iter<'a, String, SubjectBeliefs>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut BeliefStore {
+    type Item = (&'a String, &'a mut SubjectBeliefs);
+    type IntoIter = IterMut<'a, String, SubjectBeliefs>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
     }
 }
 

@@ -10,6 +10,10 @@ pub struct Trust(u8);
 pub struct SourceMap(HashMap<AgentId, Trust>);
 
 impl SourceMap {
+    pub fn new() -> Self {
+        SourceMap(HashMap::new())
+    }
+
     /// Get a source agent's trust level.
     pub fn get(&self, source: AgentId) -> Option<Trust> {
         self.0.get(&source).copied()

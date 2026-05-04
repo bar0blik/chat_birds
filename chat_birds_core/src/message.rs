@@ -1,5 +1,6 @@
 use crate::belief::BeliefStore;
 use crate::core::AgentId;
+use crate::temporal::Clock;
 
 /// A message passed between agents, carrying a payload of beliefs.
 pub struct Message {
@@ -10,7 +11,7 @@ pub struct Message {
 
 /// Trait for encoding and decoding messages to/from strings.
 pub trait MessageCodec {
-    fn encode(&self, msg: &Message) -> String;
+    fn encode(&self, msg: &Message, clock: &Clock) -> String;
     fn decode(&self, s: &str, from: AgentId, to: AgentId) -> Option<Message>;
 }
 

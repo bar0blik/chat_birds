@@ -7,7 +7,7 @@ use crate::{
 };
 
 pub trait ToTense {
-    fn to_tense(&self, story: Temporal, scope: Timestamp, clock: Clock) -> Tense;
+    fn to_tense(&self, story: Temporal, scope: Timestamp, clock: &Clock) -> Tense;
 }
 
 fn is_lt(c: Option<Ordering>) -> bool {
@@ -111,9 +111,7 @@ fn match_future(t: &Temporal, story: &Temporal, _scope: Timestamp, _clock: &Cloc
                 return TenseGroup::PerfectContinuous;
             }
             // story <= end with broad/unanchored start
-            if is_ge(end_story)
-                && matches!(start.as_ref(), Temporal::Tense(_) | Temporal::Always)
-            {
+            if is_ge(end_story) && matches!(start.as_ref(), Temporal::Tense(_) | Temporal::Always) {
                 return TenseGroup::Continuous;
             }
             // finished before future story point
@@ -137,7 +135,7 @@ fn match_future(t: &Temporal, story: &Temporal, _scope: Timestamp, _clock: &Cloc
 }
 
 impl ToTense for Temporal {
-    fn to_tense(&self, story: Temporal, scope: Timestamp, clock: Clock) -> Tense {
+    fn to_tense(&self, story: Temporal, scope: Timestamp, clock: &Clock) -> Tense {
         /*
         ## Present : time of story =~ current time
         Present simple :
@@ -184,15 +182,15 @@ impl ToTense for Temporal {
         match cmp {
             Some(Ordering::Greater) => Tense {
                 time: TenseTime::Future,
-                group: match_future(&self, &story, scope, &clock),
+                group: match_future(&self, &story, scope, clock),
             },
             Some(Ordering::Equal) => Tense {
                 time: TenseTime::Present,
-                group: match_present(&self, &story, scope, &clock),
+                group: match_present(&self, &story, scope, clock),
             },
             Some(Ordering::Less) => Tense {
                 time: TenseTime::Past,
-                group: match_past(&self, &story, scope, &clock),
+                group: match_past(&self, &story, scope, clock),
             },
             None => {
                 panic!("Impossible comparison between current time and time of story")

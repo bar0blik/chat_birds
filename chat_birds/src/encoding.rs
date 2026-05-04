@@ -1,5 +1,8 @@
+use chat_birds_core::{Clock, Message, MessageCodec, Temporal, Timestamp};
+
 use crate::belief::SubjectBeliefs;
 use crate::states::StateAsRepr;
+use crate::time::ToTense;
 use crate::verb::{Person, Tense, TenseGroup};
 use crate::BeliefKey;
 use crate::{AgentId, TenseTime}; // bring the extension trait into scope
@@ -30,6 +33,7 @@ fn encode_sentence(
     to: AgentId,
     subject: &String,
     beliefs: &SubjectBeliefs,
+    clock: &Clock,
 ) -> String {
     // ------------------------------------------------------------------------
     // 1. Determine grammatical person for conjugation
@@ -69,14 +73,18 @@ fn encode_sentence(
 
                 verb_groups.entry(conjugated).or_default().push(object);
             } else {
+                dbg!("Failed to downcast to StateRepr");
                 // Fallback: use type name-based object and default verb
                 let state_ref: &dyn crate::State = belief.state.as_ref();
                 let object = short_type_name(std::any::type_name_of_val(state_ref)).to_lowercase();
                 let verb = crate::verb::Verb::be();
-                let tense = Tense {
-                    time: TenseTime::Present,
-                    group: TenseGroup::Simple,
-                };
+
+                // TODO: get scope and time of story to compute tense
+                let story = Temporal::Timestamp(clock.now());
+                let mut scope = Timestamp::empty();
+                scope.set_second(Some(10));
+
+                let tense = belief.temporal.to_tense(story, scope, clock);
                 let conjugated = verb.get(person, plural, tense);
                 verb_groups.entry(conjugated).or_default().push(object);
             }
@@ -84,10 +92,10 @@ fn encode_sentence(
     }
 
     // ------------------------------------------------------------------------
-    // 3. Format output: "<subject> <verb1> <objs>, <verb2> <objs>, ..."
+    // 3. Format output: "<subject> <verb1> <objs>, <subject> <verb2> <objs>"
     // ------------------------------------------------------------------------
     if verb_groups.is_empty() {
-        return format!("{} .", subject_string);
+        return format!("{}.", subject_string);
     }
 
     let mut clauses = Vec::new();
@@ -98,10 +106,30 @@ fn encode_sentence(
         objects.dedup();
 
         let objects_str = format_list(objects);
-        clauses.push(format!("{} {}", conjugated_verb, objects_str));
+        let clause = if objects_str.is_empty() {
+            format!("{} {}", subject_string, conjugated_verb)
+        } else {
+            format!("{} {} {}", subject_string, conjugated_verb, objects_str)
+        };
+        clauses.push(clause);
     }
 
     clauses.sort();
 
-    format!("{} {}.", subject_string, clauses.join(", "))
+    format!("{}.", format_list(clauses))
+}
+
+pub struct DefaultCodec;
+
+impl MessageCodec for DefaultCodec {
+    fn decode(&self, s: &str, from: AgentId, to: AgentId) -> Option<Message> {
+        None
+    }
+    fn encode(&self, msg: &Message, clock: &Clock) -> String {
+        let mut s = String::new();
+        for (k, v) in &msg.payload {
+            s += &encode_sentence(msg.from, msg.to, k, v, clock);
+        }
+        s
+    }
 }

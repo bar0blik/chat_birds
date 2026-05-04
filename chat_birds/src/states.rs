@@ -66,3 +66,21 @@ macro_rules! register_state_repr {
         $crate::states::register_state_repr::<$t>();
     };
 }
+
+// Implement StateRepr for the core `Nature` state so it provides
+// a sensible object string and uses the `be` verb.
+impl StateRepr for crate::Nature {
+    fn object(&self) -> String {
+        self.0.clone()
+    }
+
+    fn verb(&self) -> Verb {
+        Verb::be()
+    }
+}
+
+/// Register built-in `StateRepr` implementations for this crate.
+/// Call this once at startup so trait-object lookup works for these types.
+pub fn register_builtin_state_reprs() {
+    register_state_repr!(crate::Nature);
+}
