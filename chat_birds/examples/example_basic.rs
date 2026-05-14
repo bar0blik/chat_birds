@@ -28,7 +28,7 @@ fn main() {
     let mut payload = BeliefStore::new();
     let mut beliefs = SubjectBeliefs::new();
     let nature_belief = Belief {
-        state: Box::from(Nature("an agent".into())),
+        state: Box::from(Nature("agent".into())),
         certainty: 255,
         probability: Probability::Always,
         source: BeliefSource::Myself,

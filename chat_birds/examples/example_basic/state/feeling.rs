@@ -1,4 +1,4 @@
-use chat_birds::{impl_state, states::StateRepr, verb::Verb, State};
+use chat_birds::{impl_state, states::{StateRepr, AdjectiveCategory}, verb::Verb, State, ObjectFragment};
 
 #[derive(Clone)]
 pub enum Feeling {
@@ -43,7 +43,10 @@ impl StateRepr for FeelingState {
         }
     }
 
-    fn object(&self) -> String {
-        self.feeling.to_string()
+    fn object(&self) -> Option<ObjectFragment> {
+        Some(ObjectFragment::adjective(
+            self.feeling.to_string(),
+            AdjectiveCategory::Opinion,
+        ))
     }
 }

@@ -1,7 +1,7 @@
 use chat_birds_core::{Clock, Message, MessageCodec, Temporal, Timestamp};
 
 use crate::belief::SubjectBeliefs;
-use crate::states::StateAsRepr;
+use crate::states::{ObjectFragment, StateAsRepr};
 use crate::time::ToTense;
 use crate::verb::{Person, Tense, TenseGroup};
 use crate::BeliefKey;
@@ -26,6 +26,80 @@ fn format_list(items: Vec<String>) -> String {
 
 fn short_type_name(full: &str) -> &str {
     full.rsplit("::").next().unwrap_or(full)
+}
+
+fn orchestrate_fragments(fragments: &mut [ObjectFragment]) -> String {
+    // Partition by type and sort adjectives by category
+    let mut adjectives: Vec<(crate::states::AdjectiveCategory, &str)> = Vec::new();
+    let mut nouns = Vec::new();
+
+    for frag in fragments.iter() {
+        match frag {
+            ObjectFragment::Adjective { lemma, category } => {
+                adjectives.push((*category, lemma.as_str()))
+            }
+            ObjectFragment::Noun { lemma, .. } => nouns.push(lemma.as_str()),
+            // Skip or handle other variants later
+            _ => {}
+        }
+    }
+
+    // Sort adjectives by category (using natural order from AdjectiveCategory)
+    adjectives.sort_by_key(|(cat, _)| *cat);
+
+    // No nouns? Just join what we have
+    if nouns.is_empty() {
+        return if adjectives.is_empty() {
+            String::new()
+        } else {
+            adjectives.iter().map(|(_, lemma)| *lemma).collect::<Vec<_>>().join(" ")
+        };
+    }
+
+    // Take first noun as head, prepend adjectives
+    let head_noun = nouns[0];
+    let adj_str = adjectives
+        .iter()
+        .map(|(_, lemma)| *lemma)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let combined = if adj_str.is_empty() {
+        head_noun.to_string()
+    } else {
+        format!("{} {}", adj_str, head_noun)
+    };
+
+    // Add simple indefinite article based on the first word of the combined phrase
+    let first_word = combined.split_whitespace().next().unwrap_or(head_noun);
+    let article = if first_word
+        .chars()
+        .next()
+        .map(|c| "aeiouAEIOU".contains(c))
+        .unwrap_or(false)
+    {
+        "an"
+    } else {
+        "a"
+    };
+
+    let mut result = format!("{} {}", article, combined);
+
+    // Append extra nouns with "and" (fallback for multiple heads)
+    for extra_noun in nouns.iter().skip(1) {
+        let extra_article = if extra_noun
+            .chars()
+            .next()
+            .map(|c| "aeiouAEIOU".contains(c))
+            .unwrap_or(false)
+        {
+            "an"
+        } else {
+            "a"
+        };
+        result = format!("{} and {} {}", result, extra_article, extra_noun);
+    }
+
+    result
 }
 
 fn encode_sentence(
@@ -54,7 +128,7 @@ fn encode_sentence(
     // ------------------------------------------------------------------------
     // 2. Group beliefs by conjugated verb using StateRepr trait
     // ------------------------------------------------------------------------
-    let mut verb_groups: HashMap<String, Vec<String>> = HashMap::new();
+    let mut verb_groups: HashMap<String, Vec<ObjectFragment>> = HashMap::new();
 
     for (_type_id, belief_set) in beliefs.map.iter() {
         for belief in belief_set {
@@ -63,7 +137,7 @@ fn encode_sentence(
             // registry in `states.rs` lets us locate the concrete implementation.
             if let Some(state_repr) = belief.state.as_state_repr() {
                 let verb = state_repr.verb();
-                let object = state_repr.object();
+                let object_opt = state_repr.object();
 
                 let tense = Tense {
                     time: TenseTime::Present,
@@ -71,12 +145,27 @@ fn encode_sentence(
                 };
                 let conjugated = verb.get(person, plural, tense);
 
-                verb_groups.entry(conjugated).or_default().push(object);
+                let entry = verb_groups.entry(conjugated).or_default();
+                if let Some(obj_frag) = object_opt {
+                    entry.push(obj_frag);
+                } else {
+                    // Intentionally ignore None: produce no object text for this verb
+                    // ensure the verb key exists so we can emit a bare verb clause later
+                    let _ = entry;
+                }
             } else {
-                dbg!("Failed to downcast to StateRepr");
+                dbg!(
+                    "
+                =====================================================\n
+                           Failed to downcast to StateRepr\n
+                =====================================================
+                "
+                );
                 // Fallback: use type name-based object and default verb
                 let state_ref: &dyn crate::State = belief.state.as_ref();
-                let object = short_type_name(std::any::type_name_of_val(state_ref)).to_lowercase();
+                let object = ObjectFragment::noun(
+                    short_type_name(std::any::type_name_of_val(state_ref)).to_lowercase(),
+                );
                 let verb = crate::verb::Verb::be();
 
                 // TODO: get scope and time of story to compute tense
@@ -100,12 +189,8 @@ fn encode_sentence(
 
     let mut clauses = Vec::new();
 
-    for (conjugated_verb, mut objects) in verb_groups {
-        // Deduplicate and sort for deterministic output
-        objects.sort();
-        objects.dedup();
-
-        let objects_str = format_list(objects);
+    for (conjugated_verb, mut fragments) in verb_groups {
+        let objects_str = orchestrate_fragments(&mut fragments);
         let clause = if objects_str.is_empty() {
             format!("{} {}", subject_string, conjugated_verb)
         } else {

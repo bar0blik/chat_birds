@@ -1,4 +1,4 @@
-use chat_birds::{impl_state, states::StateRepr, verb::Verb, State};
+use chat_birds::{impl_state, states::{StateRepr, AdjectiveCategory}, verb::Verb, State, ObjectFragment};
 
 #[derive(Clone)]
 pub enum Color {
@@ -36,7 +36,10 @@ impl StateRepr for ColorState {
         Verb::be()
     }
 
-    fn object(&self) -> String {
-        self.color.to_string()
+    fn object(&self) -> Option<ObjectFragment> {
+        Some(ObjectFragment::adjective(
+            self.color.to_string(),
+            AdjectiveCategory::Color,
+        ))
     }
 }

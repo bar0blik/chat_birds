@@ -1,4 +1,4 @@
-use chat_birds::{impl_state, states::StateRepr, verb::Verb, State};
+use chat_birds::{impl_state, states::StateRepr, verb::Verb, ObjectFragment, State};
 
 #[derive(Clone)]
 pub struct RunningState;
@@ -16,7 +16,8 @@ impl StateRepr for RunningState {
         }
     }
 
-    fn object(&self) -> String {
-        "".into()
+    fn object(&self) -> Option<ObjectFragment> {
+        // Running has no object: it's an intransitive verb here
+        None
     }
 }

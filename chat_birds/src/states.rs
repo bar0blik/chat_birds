@@ -7,17 +7,75 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
+/// Adjective category following the natural order of adjectives in English:
+/// opinion, size, shape, age, color, origin, material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AdjectiveCategory {
+    Opinion,
+    Size,
+    Shape,
+    Age,
+    Color,
+    Origin,
+    Material,
+}
+
 fn short_type_name(full: &str) -> &str {
     full.rsplit("::").next().unwrap_or(full)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjectFragment {
+    /// A noun/head word: "agent", "bird", "house"
+    Noun { lemma: String, count: usize },
+
+    /// An adjective/modifier: "blue", "large", "flying"
+    Adjective { lemma: String, category: AdjectiveCategory },
+
+    /// A prepositional phrase: "in the house", "with wings"
+    /// (optional extension for later)
+    Prepositional { prep: String, complement: String },
+}
+
+impl ObjectFragment {
+    /// Helper for simple nouns (backward compat)
+    pub fn noun(lemma: impl Into<String>) -> Self {
+        ObjectFragment::Noun {
+            lemma: lemma.into(),
+            count: 1,
+        }
+    }
+
+    /// Helper for adjectives with category
+    pub fn adjective(lemma: impl Into<String>, category: AdjectiveCategory) -> Self {
+        ObjectFragment::Adjective {
+            lemma: lemma.into(),
+            category,
+        }
+    }
+}
+
 pub trait StateRepr: State + Any {
-    fn object(&self) -> String {
-        short_type_name(std::any::type_name_of_val(self)).to_lowercase()
+    fn object(&self) -> Option<ObjectFragment> {
+        Some(ObjectFragment::noun(
+            short_type_name(std::any::type_name_of_val(self)).to_lowercase(),
+        ))
     }
 
     fn verb(&self) -> Verb {
         Verb::be()
+    }
+}
+
+impl ToString for ObjectFragment {
+    fn to_string(&self) -> String {
+        match self {
+            ObjectFragment::Noun { lemma, count: _ } => lemma.clone(),
+            ObjectFragment::Adjective { lemma, .. } => lemma.clone(),
+            ObjectFragment::Prepositional { prep, complement } => {
+                format!("{} {}", prep, complement)
+            }
+        }
     }
 }
 
@@ -70,8 +128,8 @@ macro_rules! register_state_repr {
 // Implement StateRepr for the core `Nature` state so it provides
 // a sensible object string and uses the `be` verb.
 impl StateRepr for crate::Nature {
-    fn object(&self) -> String {
-        self.0.clone()
+    fn object(&self) -> Option<ObjectFragment> {
+        Some(ObjectFragment::noun(self.0.clone()))
     }
 
     fn verb(&self) -> Verb {
