@@ -26,20 +26,15 @@ pub trait World {
         self.agents_mut().insert(id, agent);
     }
 
-    /// Dispatch a message to its recipient. Handles routing and chains responses.
+    /// Dispatch a message to its recipient.
     ///
-    /// Uses a simple FIFO queue: processes the initial message's recipient,
-    /// collects their responses, and queues them for delivery.
-    fn dispatch(&mut self, initial: Message) {
-        let mut queue = std::collections::VecDeque::new();
-        queue.push_back(initial);
-        while let Some(msg) = queue.pop_front() {
-            let Some(recipient) = self.agents_mut().get_mut(&msg.to) else {
-                continue;
-            };
-            let responses = recipient.on_message(msg);
-            queue.extend(responses);
-        }
+    /// This only propagates the message to the addressed agent.
+    /// Reply chaining is intentionally not handled here.
+    fn dispatch(&mut self, msg: Message) {
+        let Some(recipient) = self.agents_mut().get_mut(&msg.to) else {
+            return;
+        };
+        recipient.on_message(msg);
     }
 
     /// Decode a string message and dispatch it.

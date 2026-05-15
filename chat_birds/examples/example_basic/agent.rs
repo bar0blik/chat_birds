@@ -47,7 +47,13 @@ impl Agent for MyAgent {
         &mut self.sources
     }
 
-    fn on_message(&mut self, _msg: Message) -> Vec<Message> {
-        Vec::new()
+    fn on_message(&mut self, msg: Message) {}
+
+    fn reply(&mut self, id: AgentId) -> Message {
+        Message {
+            from: self.id(),
+            to: id,
+            payload: BeliefStore::new(),
+        }
     }
 }

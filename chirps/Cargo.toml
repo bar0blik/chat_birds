@@ -8,6 +8,7 @@ ratatui = "0.30.0"
 chat_birds = { path = "../chat_birds" }
 crossterm = "0.29.0"
 color-eyre = "0.6.5"
+clap = { version = "4.5", features = ["derive"] }
 
 [profile.release]
 codegen-units = 1

@@ -43,8 +43,11 @@ pub trait Agent {
         self.source_map_mut().set(source, trust)
     }
 
-    /// Handle an incoming message. Return a list of messages to send in response.
-    fn on_message(&mut self, msg: Message) -> Vec<Message>;
+    /// Handle an incoming message.
+    fn on_message(&mut self, msg: Message);
+
+    /// Generate a message to reply to an agent.
+    fn reply(&mut self, id: AgentId) -> Message;
 
     /// Apply memory decay. Default implementation:
     /// - Reduces certainty by 38 per entry
