@@ -1,16 +1,23 @@
+use chat_birds::states::StateAsRepr;
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, KeyEventKind};
-use ratatui::layout::{Constraint, Layout, Position};
+use ratatui::layout::{Alignment, Constraint, Layout, Position};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Wrap,
+    Block, BorderType, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, Wrap,
 };
 use ratatui::{DefaultTerminal, Frame};
+use std::any::TypeId;
 use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
 
-use chat_birds::{Agent, AgentId, DefaultCodec, Message, MessageCodec, State, World, impl_state};
+use chat_birds::{
+    Agent, AgentId, BeliefSource, DefaultCodec, Message, MessageCodec, ObjectFragment, Probability,
+    State, Temporal, World, impl_state, register_builtin_state_reprs, register_state_repr,
+    states::StateRepr,
+};
 
 mod agent;
 mod commands;
@@ -18,8 +25,13 @@ mod commands;
 use agent::*;
 use commands::{SubCommand, parse_command};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn main() -> Result<()> {
+    register_builtin_state_reprs();
+    register_state_repr!(Name);
     color_eyre::install()?;
+    register_state_label::<Name>();
     ratatui::run(|terminal| App::new().run(terminal))
 }
 
@@ -64,6 +76,34 @@ struct Name(String);
 
 impl_state!(Name);
 
+impl StateRepr for Name {
+    fn object(&self) -> Option<ObjectFragment> {
+        Some(ObjectFragment::noun(&self.0))
+    }
+}
+
+static STATE_LABELS: OnceLock<RwLock<HashMap<TypeId, &'static str>>> = OnceLock::new();
+
+fn short_type_name(full: &str) -> &str {
+    full.rsplit("::").next().unwrap_or(full)
+}
+
+fn register_state_label<T: State + 'static>() {
+    register_state_label_with::<T>(short_type_name(std::any::type_name::<T>()));
+}
+
+fn register_state_label_with<T: State + 'static>(label: &'static str) {
+    let map = STATE_LABELS.get_or_init(|| RwLock::new(HashMap::new()));
+    let mut write = map.write().unwrap();
+    write.insert(TypeId::of::<T>(), label);
+}
+
+fn state_label(tid: TypeId) -> Option<&'static str> {
+    let map = STATE_LABELS.get_or_init(|| RwLock::new(HashMap::new()));
+    let read = map.read().unwrap();
+    read.get(&tid).copied()
+}
+
 /// App holds the state of the application
 struct App {
     /// Current value of the input box
@@ -80,6 +120,12 @@ struct App {
     messages_view_height: u16,
     /// Cached total message lines
     messages_total_lines: u16,
+    /// Scroll offset for the beliefs list
+    beliefs_scroll: u16,
+    /// Cached beliefs viewport height
+    beliefs_view_height: u16,
+    /// Cached total beliefs lines
+    beliefs_total_lines: u16,
     /// Currently focused block
     focused_block: FocusedBlock,
     /// Currently active (inside) block
@@ -115,6 +161,9 @@ impl App {
             messages_scroll: 0,
             messages_view_height: 0,
             messages_total_lines: 0,
+            beliefs_scroll: 0,
+            beliefs_view_height: 0,
+            beliefs_total_lines: 0,
             character_index: 0,
             focused_block: FocusedBlock::Chat,
             active_block: None,
@@ -409,6 +458,15 @@ impl App {
         }
     }
 
+    fn update_beliefs_metrics(&mut self, total_lines: u16, view_height: u16) {
+        self.beliefs_total_lines = total_lines;
+        self.beliefs_view_height = view_height;
+        let max_scroll = total_lines.saturating_sub(view_height);
+        if self.beliefs_scroll > max_scroll {
+            self.beliefs_scroll = max_scroll;
+        }
+    }
+
     fn count_wrapped_lines(&self, lines: &[Line], width: u16) -> u16 {
         let width = width.max(1) as usize;
         let mut total: usize = 0;
@@ -425,6 +483,14 @@ impl App {
             .saturating_sub(self.messages_view_height) as i16;
         let next = (self.messages_scroll as i16 + delta).clamp(0, max_scroll);
         self.messages_scroll = next as u16;
+    }
+
+    fn scroll_beliefs_by(&mut self, delta: i16) {
+        let max_scroll = self
+            .beliefs_total_lines
+            .saturating_sub(self.beliefs_view_height) as i16;
+        let next = (self.beliefs_scroll as i16 + delta).clamp(0, max_scroll);
+        self.beliefs_scroll = next as u16;
     }
 
     fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -480,16 +546,30 @@ impl App {
                         KeyCode::Up if self.active_block == Some(FocusedBlock::Chat) => {
                             self.scroll_messages_by(-1);
                         }
+                        KeyCode::Up if self.active_block == Some(FocusedBlock::Beliefs) => {
+                            self.scroll_beliefs_by(-1);
+                        }
                         KeyCode::Down if self.active_block == Some(FocusedBlock::Chat) => {
                             self.scroll_messages_by(1);
+                        }
+                        KeyCode::Down if self.active_block == Some(FocusedBlock::Beliefs) => {
+                            self.scroll_beliefs_by(1);
                         }
                         KeyCode::PageUp if self.active_block == Some(FocusedBlock::Chat) => {
                             let step = self.messages_view_height.max(1) as i16;
                             self.scroll_messages_by(-step);
                         }
+                        KeyCode::PageUp if self.active_block == Some(FocusedBlock::Beliefs) => {
+                            let step = self.beliefs_view_height.max(1) as i16;
+                            self.scroll_beliefs_by(-step);
+                        }
                         KeyCode::PageDown if self.active_block == Some(FocusedBlock::Chat) => {
                             let step = self.messages_view_height.max(1) as i16;
                             self.scroll_messages_by(step);
+                        }
+                        KeyCode::PageDown if self.active_block == Some(FocusedBlock::Beliefs) => {
+                            let step = self.beliefs_view_height.max(1) as i16;
+                            self.scroll_beliefs_by(step);
                         }
                         // When editing (inside chat) Enter sends message
                         KeyCode::Enter => {
@@ -514,9 +594,18 @@ impl App {
 
     fn render(&mut self, frame: &mut Frame) {
         use Constraint::*;
-        // Vertical layout for help bar
-        let vertical = Layout::vertical([Fill(1), Length(1)]);
-        let [main_area, help_area] = vertical.areas(frame.area());
+        // Vertical layout for help bar & title
+        let vertical = Layout::vertical([Length(1), Fill(1), Length(1)]);
+        let [title_area, main_area, help_area] = vertical.areas(frame.area());
+
+        let title = Block::new()
+            .borders(Borders::TOP)
+            .title(format!("Chirps - v{VERSION}").white())
+            .title_alignment(Alignment::Center)
+            .blue();
+
+        frame.render_widget(title, title_area);
+
         let help_message = if let Some(active) = self.active_block {
             match active {
                 FocusedBlock::Chat => Paragraph::new(Text::from(Line::from(vec![
@@ -596,7 +685,7 @@ impl App {
                     .map(|n| n.0.clone())
                     .unwrap_or_else(|| format!("agent-{}", id.0));
                 // TODO: add arrows to indicate channel members
-                let content = Line::from(Span::raw(format!("{}: {}", id.0, name)));
+                let content = Line::from(Span::raw(format!("  {}: {}", id.0, name)));
                 if let Some(selected) = self.selected_agent
                     && &selected == id
                 {
@@ -637,7 +726,104 @@ impl App {
         } else {
             Block::bordered().title("Beliefs".green())
         };
+        let belief_list_area = beliefs_block.inner(beliefs_area);
         frame.render_widget(beliefs_block, beliefs_area);
+
+        // Belief list
+        let beliefs_lines: Vec<Line> = match self.selected_agent {
+            None => Vec::new(),
+            Some(id) => {
+                let agent = self.agents.get(&id).unwrap();
+                let mut lines: Vec<Line> = Vec::new();
+
+                if !agent.states().0.is_empty() {
+                    lines.push(Line::from("self (singular) {"));
+                    for state in agent.states().0.values() {
+                        let state_id = state.as_any().type_id();
+                        let state_name = state_label(state_id).unwrap_or("unknown");
+                        let object = if let Some(state_repr) = state.as_state_repr() {
+                            state_repr
+                                .object()
+                                .map(|frag| frag.to_string())
+                                .unwrap_or("no object".into())
+                        } else {
+                            "no state repr".into()
+                        };
+
+                        let entry = format!(
+                            "{{{} (c:{}, p:{:?}, s:{:?}, t:{:?})}},",
+                            object,
+                            255u8,
+                            Probability::Always,
+                            BeliefSource::Myself,
+                            Temporal::Always
+                        );
+                        lines.push(Line::from(format!("    {} => {}", state_name, entry)));
+                    }
+                    lines.push(Line::from("}"));
+                }
+
+                lines.extend(agent.beliefs().into_iter().flat_map(|(subject, beliefs)| {
+                    let mut subject_lines: Vec<Line> = Vec::new();
+                    // Return first line like "MySubject {"
+                    subject_lines.push(Line::from(format!(
+                        "{} ({}) {{",
+                        subject.as_str(),
+                        if beliefs.plural { "plural" } else { "singular" }
+                    )));
+                    // Return every line
+                    for (state, values) in &beliefs.map {
+                        let string_values = values.iter().map(|belief| {
+                            let object = if let Some(state_repr) = belief.state.as_state_repr() {
+                                state_repr
+                                    .object()
+                                    .map(|frag| frag.to_string())
+                                    .unwrap_or("no object".into())
+                            } else {
+                                "no state repr".into()
+                            };
+
+                            format!(
+                                "{{{} (c:{}, p:{:?}, s:{:?}, t:{:?})}},",
+                                object,
+                                belief.certainty,
+                                belief.probability,
+                                belief.source,
+                                belief.temporal
+                            )
+                        });
+                        let mut values_string = String::new();
+                        for s in string_values {
+                            values_string = format!("{} {}", values_string, s);
+                        }
+                        let state_name = state_label(*state).unwrap_or("unknown");
+                        let line = Line::from(format!("    {} => {}", state_name, values_string));
+                        subject_lines.push(line);
+                    }
+                    // Return last line like "}"
+                    subject_lines.push(Line::from("}"));
+                    subject_lines
+                }));
+
+                lines
+            }
+        };
+
+        let beliefs_total_lines = self.count_wrapped_lines(&beliefs_lines, belief_list_area.width);
+        self.update_beliefs_metrics(beliefs_total_lines, belief_list_area.height);
+        let beliefs_text = Text::from(beliefs_lines);
+        let beliefs_widget = Paragraph::new(beliefs_text)
+            .wrap(Wrap { trim: false })
+            .scroll((self.beliefs_scroll, 0));
+        frame.render_widget(beliefs_widget, belief_list_area);
+
+        if self.beliefs_total_lines > self.beliefs_view_height {
+            let mut scrollbar_state = ScrollbarState::new(self.beliefs_total_lines as usize)
+                .position(self.beliefs_scroll as usize)
+                .viewport_content_length(self.beliefs_view_height as usize);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+            frame.render_stateful_widget(scrollbar, belief_list_area, &mut scrollbar_state);
+        }
 
         // Chat panel with outer border
         let chat_block = if self.active_block == Some(FocusedBlock::Chat) {

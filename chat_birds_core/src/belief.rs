@@ -219,6 +219,10 @@ impl BeliefStore {
     ) -> Option<SubjectBeliefs> {
         self.0.insert(key.to_key().into_owned(), value)
     }
+
+    pub fn iter(&self) -> Iter<'_, String, SubjectBeliefs> {
+        self.into_iter()
+    }
 }
 
 impl Default for BeliefStore {

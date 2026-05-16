@@ -30,7 +30,10 @@ pub enum ObjectFragment {
     Noun { lemma: String, count: usize },
 
     /// An adjective/modifier: "blue", "large", "flying"
-    Adjective { lemma: String, category: AdjectiveCategory },
+    Adjective {
+        lemma: String,
+        category: AdjectiveCategory,
+    },
 
     /// A prepositional phrase: "in the house", "with wings"
     /// (optional extension for later)
